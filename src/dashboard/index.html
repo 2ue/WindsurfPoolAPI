@@ -216,14 +216,13 @@ code {
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 280px));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 14px;
   margin-bottom: 24px;
-  justify-content: start;
   align-items: stretch;
 }
 .metrics-grid.compact {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 220px));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 /* ─── Section Block ───────────────────────────── */
