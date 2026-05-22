@@ -24,8 +24,6 @@ async function main() {
   console.log(banner);
   console.log(`  OpenAI-compatible proxy for Windsurf — by dwgx1337\n`);
 
-  initPricing();
-
   // Start language server binary
   const binaryPath = config.lsBinaryPath;
   if (existsSync(binaryPath)) {
@@ -63,6 +61,7 @@ async function main() {
 
   // Init auth pool
   await initAuth();
+  initPricing();
 
   if (!isAuthenticated()) {
     log.warn('No accounts configured. Add via:');

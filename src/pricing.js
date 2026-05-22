@@ -21,6 +21,9 @@ const _state = {
   source: 'LiteLLM model_prices_and_context_window.json',
   fetchedAt: 0,
   modelCount: 0,
+  sourceModelCount: 0,
+  matchedModelCount: 0,
+  unmatchedModelCount: 0,
   lastError: '',
   prices: {},
 };
@@ -38,13 +41,17 @@ function loadFromDisk() {
     if (!existsSync(PRICING_FILE)) return;
     const raw = JSON.parse(readFileSync(PRICING_FILE, 'utf-8'));
     if (!raw || typeof raw !== 'object') return;
+    const filtered = filterPricesForCurrentModels(raw.prices || {});
     Object.assign(_state, {
       sourceUrl: raw.sourceUrl || PRICE_SOURCE_URL,
       source: raw.source || _state.source,
       fetchedAt: raw.fetchedAt || 0,
-      modelCount: raw.modelCount || Object.keys(raw.prices || {}).length,
+      modelCount: Object.keys(filtered.prices).length,
+      sourceModelCount: raw.sourceModelCount || raw.rawModelCount || raw.modelCount || Object.keys(raw.prices || {}).length,
+      matchedModelCount: filtered.matchedModelCount,
+      unmatchedModelCount: filtered.unmatchedModelCount,
       lastError: raw.lastError || '',
-      prices: raw.prices || {},
+      prices: filtered.prices,
     });
   } catch (err) {
     _state.lastError = `读取本地价格缓存失败: ${err.message}`;
@@ -92,6 +99,30 @@ function normalisePriceTable(raw) {
   return prices;
 }
 
+function filterPricesForCurrentModels(allPrices) {
+  const prices = {};
+  let matchedModelCount = 0;
+  let unmatchedModelCount = 0;
+
+  for (const model of Object.keys(MODELS)) {
+    let matched = null;
+    for (const c of modelCandidates(model)) {
+      if (allPrices[c]) {
+        matched = allPrices[c];
+        break;
+      }
+    }
+    if (matched) {
+      prices[matched.model] = matched;
+      matchedModelCount++;
+    } else {
+      unmatchedModelCount++;
+    }
+  }
+
+  return { prices, matchedModelCount, unmatchedModelCount };
+}
+
 export function initPricing() {
   if (config.priceSyncOnStartup) {
     syncModelPrices().catch(err => log.warn(`Pricing startup sync failed: ${err.message}`));
@@ -108,20 +139,25 @@ export async function syncModelPrices() {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const raw = await res.json();
-    const prices = normalisePriceTable(raw);
-    if (Object.keys(prices).length < 100) {
-      throw new Error(`价格表数量异常: ${Object.keys(prices).length}`);
+    const allPrices = normalisePriceTable(raw);
+    const sourceModelCount = Object.keys(allPrices).length;
+    if (sourceModelCount < 100) {
+      throw new Error(`价格表数量异常: ${sourceModelCount}`);
     }
+    const related = filterPricesForCurrentModels(allPrices);
     Object.assign(_state, {
       sourceUrl: PRICE_SOURCE_URL,
       source: 'LiteLLM model_prices_and_context_window.json',
       fetchedAt: Date.now(),
-      modelCount: Object.keys(prices).length,
+      modelCount: Object.keys(related.prices).length,
+      sourceModelCount,
+      matchedModelCount: related.matchedModelCount,
+      unmatchedModelCount: related.unmatchedModelCount,
       lastError: '',
-      prices,
+      prices: related.prices,
     });
     saveToDisk();
-    log.info(`Pricing synced: ${_state.modelCount} models from ${PRICE_SOURCE_URL}`);
+    log.info(`Pricing synced: ${_state.modelCount} related price entries for ${_state.matchedModelCount}/${Object.keys(MODELS).length} current models from ${PRICE_SOURCE_URL}`);
     return getPricingSnapshot();
   } catch (err) {
     _state.lastError = err.name === 'AbortError' ? '价格同步超时' : err.message;
@@ -227,6 +263,9 @@ export function getPricingSnapshot() {
     sourceUrl: _state.sourceUrl,
     fetchedAt: _state.fetchedAt,
     modelCount: _state.modelCount,
+    sourceModelCount: _state.sourceModelCount,
+    matchedModelCount: _state.matchedModelCount,
+    unmatchedModelCount: _state.unmatchedModelCount,
     lastError: _state.lastError,
     prices: _state.prices,
   };

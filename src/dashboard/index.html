@@ -1232,6 +1232,10 @@ tbody tr:hover td { background: var(--surface-2); }
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
         <span>模型控制</span>
       </a>
+      <a href="#pricing" data-panel="pricing">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/><path d="M8 6v12"/><path d="M16 6v12"/></svg>
+        <span>价格表</span>
+      </a>
       <a href="#proxy" data-panel="proxy">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
         <span>代理配置</span>
@@ -1515,6 +1519,38 @@ tbody tr:hover td { background: var(--surface-2); }
     </div>
   </section>
 
+  <!-- Pricing -->
+  <section class="panel" id="p-pricing">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">模型价格表</h1>
+        <div class="page-subtitle">仅同步并缓存当前 Windsurf 模型目录相关的价格</div>
+      </div>
+      <button class="btn btn-sm" onclick="App.syncPricing()">同步价格</button>
+    </div>
+
+    <div class="metrics-grid" id="pricing-cards"></div>
+
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title">当前模型价格</div>
+          <div class="section-desc" id="pricing-source-desc">启动时自动同步，可手动刷新。无价格的模型请求不会计算美元费用。</div>
+        </div>
+      </div>
+      <div class="section-body tight">
+        <div class="table-wrap">
+          <table id="pricing-table">
+            <thead><tr>
+              <th>模型</th><th>来源模型</th><th>Provider</th><th>输入 / 1M</th><th>输出 / 1M</th><th>缓存读 / 1M</th><th>缓存写 / 1M</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- Proxy -->
   <section class="panel" id="p-proxy">
     <div class="page-header">
@@ -1626,7 +1662,6 @@ tbody tr:hover td { background: var(--surface-2); }
         <div class="page-subtitle">请求量、Token 消耗、Credit 花销与模型使用情况</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-sm" onclick="App.syncPricing()">同步价格</button>
         <button class="btn btn-sm" onclick="App.exportUsage()">导出历史</button>
         <button class="btn btn-sm" onclick="document.getElementById('usage-import-file').click()">导入历史</button>
         <input id="usage-import-file" type="file" accept="application/json" style="display:none" onchange="App.importUsage(event)">
@@ -1656,25 +1691,6 @@ tbody tr:hover td { background: var(--surface-2); }
         <div class="chart-tooltip" id="stats-main-tooltip"></div>
       </div>
       <div class="chart-legend" id="stats-main-legend"></div>
-    </div>
-
-    <div class="section">
-      <div class="section-header">
-        <div>
-          <div class="section-title">模型价格表</div>
-          <div class="section-desc" id="pricing-source-desc">启动时自动同步，可手动刷新。无价格的模型请求不会计算美元费用。</div>
-        </div>
-      </div>
-      <div class="section-body tight">
-        <div class="table-wrap">
-          <table id="pricing-table">
-            <thead><tr>
-              <th>模型</th><th>来源模型</th><th>Provider</th><th>输入 / 1M</th><th>输出 / 1M</th><th>缓存读 / 1M</th><th>缓存写 / 1M</th>
-            </tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </div>
     </div>
 
     <div class="chart-grid">
@@ -2100,7 +2116,7 @@ const App = {
 
     const loaders = {
       overview: 'loadOverview', 'windsurf-login': 'loadWindsurfLogin',
-      accounts: 'loadAccounts', models: 'loadModels', proxy: 'loadProxy',
+      accounts: 'loadAccounts', models: 'loadModels', pricing: 'loadPricing', proxy: 'loadProxy',
       logs: 'loadLogs', stats: 'loadStats', bans: 'loadBans',
       experimental: 'loadExperimental',
     };
@@ -3369,13 +3385,8 @@ const App = {
   },
 
   async loadStats() {
-    const [d, pricing, modelData] = await Promise.all([
-      this.api('GET', '/stats'),
-      this.api('GET', '/pricing').catch(() => null),
-      this.api('GET', '/models').catch(() => ({})),
-    ]);
+    const d = await this.api('GET', '/stats');
     this.statsData = d;
-    this.pricingData = pricing;
     const totalTokens = d.totalTokens || 0;
     const totalCredits = d.totalCredits || 0;
     const totalCostUsd = d.totalCostUsd || 0;
@@ -3391,7 +3402,6 @@ const App = {
       <div class="card success"><div class="card-header"><div class="card-title">美元费用</div></div><div class="card-value">${this._fmtUsd(totalCostUsd)}</div></div>
     `;
     this.renderStatsCharts(d);
-    this.renderPricingTable(pricing, d, modelData);
 
     // Per-model stats — now also shows input/output/cached tokens, credits and USD cost
     // Accumulate token splits from apis[*].models[model].details so the table
@@ -3508,6 +3518,29 @@ const App = {
     this.poll('stats', () => this.loadStats(), 30000);
   },
 
+  async loadPricing() {
+    const [pricing, modelData] = await Promise.all([
+      this.api('GET', '/pricing').catch(() => null),
+      this.api('GET', '/models').catch(() => ({})),
+    ]);
+    this.pricingData = pricing;
+    const totalModels = (modelData?.models || []).length;
+    const matched = pricing?.matchedModelCount || 0;
+    const unmatched = pricing?.unmatchedModelCount || Math.max(0, totalModels - matched);
+    const fetched = pricing?.fetchedAt ? new Date(pricing.fetchedAt).toLocaleString() : '尚未同步';
+    const cards = document.getElementById('pricing-cards');
+    if (cards) {
+      cards.innerHTML = `
+        <div class="card info"><div class="card-header"><div class="card-title">当前模型</div></div><div class="card-value">${totalModels}</div></div>
+        <div class="card success"><div class="card-header"><div class="card-title">已匹配</div></div><div class="card-value">${matched}</div></div>
+        <div class="card error"><div class="card-header"><div class="card-title">未匹配</div></div><div class="card-value">${unmatched}</div></div>
+        <div class="card accent"><div class="card-header"><div class="card-title">缓存价格</div></div><div class="card-value">${pricing?.modelCount || 0}</div><div class="card-sub">来源 ${pricing?.sourceModelCount || 0} · ${this.esc(fetched)}</div></div>
+      `;
+    }
+    this.renderPricingTable(pricing, modelData);
+    this.poll('pricing', () => this.loadPricing(), 60000);
+  },
+
   _priceCandidates(model) {
     const raw = String(model || '').trim();
     const dashed = raw.replace(/(\d)\.(\d)/g, '$1-$2');
@@ -3551,12 +3584,9 @@ const App = {
     return this._fmtUsd(Number(v || 0) * 1_000_000);
   },
 
-  renderPricingTable(pricing, stats, modelData) {
+  renderPricingTable(pricing, modelData) {
     const prices = pricing?.prices || {};
-    const modelIds = new Set([
-      ...(modelData?.models || []).map(m => m.id),
-      ...Object.keys(stats?.modelCounts || {}),
-    ]);
+    const modelIds = new Set((modelData?.models || []).map(m => m.id));
     const rows = Array.from(modelIds).sort().map(model => {
       const p = this._priceForModel(prices, model);
       return { model, p };
@@ -3565,7 +3595,7 @@ const App = {
     if (desc) {
       const fetched = pricing?.fetchedAt ? new Date(pricing.fetchedAt).toLocaleString() : '尚未同步';
       const err = pricing?.lastError ? ` · 最近错误：${pricing.lastError}` : '';
-      desc.textContent = `${pricing?.source || 'LiteLLM 价格表'} · ${pricing?.modelCount || 0} 个价格 · 同步时间：${fetched}${err}`;
+      desc.textContent = `${pricing?.source || 'LiteLLM 价格表'} · 当前相关价格 ${pricing?.modelCount || 0} 条 · 来源价格 ${pricing?.sourceModelCount || 0} 条 · 同步时间：${fetched}${err}`;
     }
     const tbody = document.querySelector('#pricing-table tbody');
     if (!tbody) return;
@@ -3587,11 +3617,13 @@ const App = {
     try {
       const r = await this.api('POST', '/pricing/sync', {});
       if (!r.success) throw new Error(r.error || '同步失败');
-      this.toast(`价格已同步：${r.pricing?.modelCount || 0} 个模型`, 'success');
-      this.loadStats();
+      this.toast(`价格已同步：${r.pricing?.modelCount || 0} 条相关价格`, 'success');
+      if (location.hash.slice(1) === 'pricing') this.loadPricing();
+      else if (location.hash.slice(1) === 'stats') this.loadStats();
     } catch (e) {
       this.toast('价格同步失败: ' + e.message, 'error');
-      this.loadStats();
+      if (location.hash.slice(1) === 'pricing') this.loadPricing();
+      else if (location.hash.slice(1) === 'stats') this.loadStats();
     }
   },
 

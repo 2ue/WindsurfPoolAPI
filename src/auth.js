@@ -876,9 +876,11 @@ export async function initAuth() {
     refreshAllCredits().catch(e => log.warn(`Scheduled credit refresh: ${e.message}`));
   }, CREDIT_INTERVAL).unref?.();
 
-  // Fetch live model catalog from cloud and merge into hardcoded catalog.
-  // Fire-and-forget — the hardcoded catalog is sufficient until this completes.
-  fetchAndMergeModelCatalog().catch(e => log.warn(`Model catalog fetch: ${e.message}`));
+  // Fetch live model catalog before pricing sync runs. The hardcoded catalog is
+  // sufficient for routing, but cost pricing should be filtered against the
+  // most current Windsurf model list.
+  try { await fetchAndMergeModelCatalog(); }
+  catch (e) { log.warn(`Model catalog fetch: ${e.message}`); }
 
   // Periodic Firebase token refresh (every 50 min). Firebase ID tokens expire
   // after 60 min; refreshing at 50 keeps a comfortable margin.
