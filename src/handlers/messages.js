@@ -17,8 +17,9 @@
 
 import { randomUUID } from 'crypto';
 import { handleChatCompletions } from './chat.js';
-import { resolveModel } from '../models.js';
+import { MODELS, resolveModel } from '../models.js';
 import { config, log } from '../config.js';
+import { getPromptInjectionConfig } from '../runtime-config.js';
 
 // ── Model name aliasing ────────────────────────────────────
 // Claude Code sends names like "claude-opus-4-5-20250929" or the bare alias
@@ -62,7 +63,7 @@ function mapModel(name, effort) {
 
   // Exact catalog match first (post-suffix-strip)
   const resolved = resolveModel(bareName);
-  if (resolved && resolved !== bareName) {
+  if (resolved && MODELS[resolved]) {
     // If caller asked for 1M but catalog entry isn't a -1m variant, try to upgrade
     if (wants1m && !/-1m$/.test(resolved)) {
       if (/^claude-sonnet-4\.6-thinking$/.test(resolved)) return 'claude-sonnet-4.6-thinking-1m';
@@ -318,12 +319,14 @@ function buildOpenAIBody(anthropicBody) {
   // Claude Code 2.1.114 places the effort tier in output_config.effort;
   // older Anthropic clients use top-level `effort`. Honour both.
   const effort = anthropicBody.output_config?.effort || anthropicBody.effort;
+  const rawModelName = String(anthropicBody.model || '');
+  const explicitThinkingModel = /\bthinking\b/i.test(rawModelName);
   const openaiBody = {
     model: mapModel(anthropicBody.model, effort),
     messages,
     stream: !!anthropicBody.stream,
   };
-  if (effort) openaiBody.reasoning_effort = effort;
+  if (effort && explicitThinkingModel) openaiBody.reasoning_effort = effort;
   if (anthropicBody.output_config?.fast === true || anthropicBody.output_config?.priority === true) {
     openaiBody.fast = true;
   }
@@ -367,14 +370,16 @@ function openaiResponseToAnthropic(openaiResp, requestedModel) {
   const choice = openaiResp.choices?.[0];
   const msg = choice?.message || {};
   const content = [];
+  const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+  const suppressTextWithToolUse = getPromptInjectionConfig().anthropicMessages?.suppressTextWithToolUse !== false;
 
   if (msg.reasoning_content) {
     content.push({ type: 'thinking', thinking: msg.reasoning_content, signature: '' });
   }
-  if (msg.content) {
+  if (msg.content && !(hasToolCalls && suppressTextWithToolUse)) {
     content.push({ type: 'text', text: msg.content });
   }
-  if (Array.isArray(msg.tool_calls)) {
+  if (hasToolCalls) {
     for (const tc of msg.tool_calls) {
       let input = {};
       try { input = JSON.parse(tc.function?.arguments || '{}'); } catch { input = { _raw: tc.function?.arguments || '' }; }
@@ -419,9 +424,10 @@ function openaiResponseToAnthropic(openaiResp, requestedModel) {
  *   : ping                                                                → ping
  */
 class AnthropicStreamTransform {
-  constructor(realRes, requestedModel) {
+  constructor(realRes, requestedModel, options = {}) {
     this.real = realRes;
     this.model = requestedModel;
+    this.suppressTextWithToolUse = !!options.suppressTextWithToolUse;
     this.msgId = genMsgId();
     this.messageStarted = false;
     this.messageStopped = false;
@@ -440,6 +446,8 @@ class AnthropicStreamTransform {
     // Buffer across write() boundaries so a single SSE event split across
     // multiple writes still parses cleanly.
     this._buf = '';
+    this.pendingText = '';
+    this.toolUseSeen = false;
   }
 
   get writableEnded() { return this.real.writableEnded || this.messageStopped; }
@@ -523,6 +531,21 @@ class AnthropicStreamTransform {
     this.toolBlockByOaiIdx.clear();
   }
 
+  _emitText(text) {
+    if (!text) return;
+    this._openTextBlock();
+    this._sendEvent('content_block_delta', {
+      index: this.textBlockIdx,
+      delta: { type: 'text_delta', text },
+    });
+  }
+
+  _flushPendingText() {
+    if (!this.pendingText) return;
+    this._emitText(this.pendingText);
+    this.pendingText = '';
+  }
+
   _handleOpenAIChunk(chunk) {
     const delta = chunk.choices?.[0]?.delta || {};
     const finish = chunk.choices?.[0]?.finish_reason;
@@ -538,15 +561,19 @@ class AnthropicStreamTransform {
 
     // Pass-through text deltas
     if (typeof delta.content === 'string' && delta.content.length) {
-      this._openTextBlock();
-      this._sendEvent('content_block_delta', {
-        index: this.textBlockIdx,
-        delta: { type: 'text_delta', text: delta.content },
-      });
+      if (this.suppressTextWithToolUse && !this.toolUseSeen) {
+        this.pendingText += delta.content;
+      } else if (!(this.suppressTextWithToolUse && this.toolUseSeen)) {
+        this._emitText(delta.content);
+      }
     }
 
     // Tool call deltas — OpenAI chunks them as {index, id, function:{name, arguments}}
     if (Array.isArray(delta.tool_calls)) {
+      if (this.suppressTextWithToolUse) {
+        this.toolUseSeen = true;
+        this.pendingText = '';
+      }
       for (const tc of delta.tool_calls) {
         const oaiIdx = tc.index ?? 0;
         const blockIdx = this._openToolBlock(oaiIdx, tc);
@@ -564,12 +591,14 @@ class AnthropicStreamTransform {
 
     if (finish) {
       this.stopReason = FINISH_TO_STOP_REASON[finish] || 'end_turn';
+      if (!this.toolUseSeen) this._flushPendingText();
     }
   }
 
   _finishMessage() {
     if (this.messageStopped) return;
     this.messageStopped = true;
+    if (!this.toolUseSeen) this._flushPendingText();
     // Close any open content blocks in reverse order
     this._closeAllToolBlocks();
     this._closeTextBlock();
@@ -714,7 +743,11 @@ export async function handleMessages(anthropicBody, deps = {}) {
       // anthropic-prefixed header so we mirror it for safety.
     },
     async handler(realRes) {
-      const wrapper = new AnthropicStreamTransform(realRes, requestedModel);
+      const suppressTextWithToolUse =
+        getPromptInjectionConfig().anthropicMessages?.suppressTextWithToolUse !== false
+        && Array.isArray(openaiBody.tools)
+        && openaiBody.tools.length > 0;
+      const wrapper = new AnthropicStreamTransform(realRes, requestedModel, { suppressTextWithToolUse });
       // Kick the stream open immediately so CC's UI leaves the "connecting"
       // state even before upstream's first token arrives. Without this the
       // client sits silent for the entire LS cold-start + Windsurf first-token

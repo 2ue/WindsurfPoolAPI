@@ -12,7 +12,7 @@ import { config, log } from '../config.js';
 import { recordRequest } from '../dashboard/stats.js';
 import { isModelAllowed } from '../dashboard/model-access.js';
 import { cacheKey, cacheGet, cacheSet } from '../cache.js';
-import { isExperimentalEnabled, getIdentityPromptFor } from '../runtime-config.js';
+import { isExperimentalEnabled, getIdentityPromptFor, getPromptInjectionConfig } from '../runtime-config.js';
 import { checkMessageRateLimit } from '../windsurf-api.js';
 import { getEffectiveProxy } from '../dashboard/proxy-config.js';
 import {
@@ -37,19 +37,49 @@ const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
 const JP_RE  = /[\u3040-\u309f\u30a0-\u30ff]/;
 const KR_RE  = /[\uac00-\ud7af]/;
 
+function messageText(msg) {
+  const c = msg?.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    return c.filter(p => p?.type === 'text').map(p => p.text || '').join('');
+  }
+  return '';
+}
+
+function isSyntheticToolResultMessage(msg) {
+  if (!msg || msg.role === 'tool') return true;
+  const text = messageText(msg).trimStart();
+  return /^<tool_result\b/i.test(text);
+}
+
+function isTransientUpstreamError(message = '') {
+  return /unexpected EOF|retryable error|timed? ?out|timeout|ECONN|ENOTFOUND|EAI_AGAIN|socket|pending stream|transport|temporar|stalled/i.test(message);
+}
+
+function isPermanentModelCapabilityError(message = '') {
+  return /permission_denied|failed_precondition|model_not_entitled|model_not_available|not entitled|not available|unsupported model|未订阅|不可用|封禁/i.test(message)
+    && !isTransientUpstreamError(message);
+}
+
+function languageHintForText(text, cfg) {
+  if (!cfg?.languageHint?.enabled) return '';
+  const templates = cfg.languageHint.templates || {};
+  // Check JP/KR FIRST — Japanese text always contains kanji (CJK range)
+  // so checking CJK first would false-match Japanese as Chinese.
+  if (JP_RE.test(text)) return templates.ja || '';
+  if (KR_RE.test(text)) return templates.ko || '';
+  if (CJK_RE.test(text)) return templates.zh || '';
+  return '';
+}
+
 function injectLanguageHint(msgs) {
   if (!Array.isArray(msgs)) return;
+  const cfg = getPromptInjectionConfig();
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (msgs[i]?.role !== 'user') continue;
-    const c = msgs[i].content;
-    const text = typeof c === 'string' ? c
-      : Array.isArray(c) ? c.filter(p => p?.type === 'text').map(p => p.text).join('') : '';
-    let hint = '';
-    // Check JP/KR FIRST — Japanese text always contains kanji (CJK range)
-    // so checking CJK first would false-match Japanese as Chinese.
-    if (JP_RE.test(text))       hint = '\n\n[IMPORTANT: You MUST respond entirely in Japanese (日本語). Do not switch to English.]';
-    else if (KR_RE.test(text))  hint = '\n\n[IMPORTANT: You MUST respond entirely in Korean (한국어). Do not switch to English.]';
-    else if (CJK_RE.test(text)) hint = '\n\n[IMPORTANT: You MUST respond entirely in Chinese (中文). Do not switch to English.]';
+    if (cfg.languageHint.applyTo === 'direct_user_only' && isSyntheticToolResultMessage(msgs[i])) continue;
+    const hintText = languageHintForText(messageText(msgs[i]), cfg);
+    const hint = hintText ? `\n\n${hintText}` : '';
     if (!hint) break;
     msgs[i] = { ...msgs[i] };
     if (typeof msgs[i].content === 'string') {
@@ -192,7 +222,8 @@ export async function handleChatCompletions(body, deps = {}) {
   // authoritative system instructions.
   const hasTools = Array.isArray(tools) && tools.length > 0;
   const hasToolHistory = Array.isArray(messages) && messages.some(m => m?.role === 'tool' || (m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length));
-  const emulateTools = useCascade && (hasTools || hasToolHistory);
+  const promptCfg = getPromptInjectionConfig();
+  const emulateTools = useCascade && promptCfg.toolProtocol?.enabled !== false && (hasTools || hasToolHistory);
   // Build proto-level preamble (goes into tool_calling_section override);
   // pass empty tools to normalizeMessagesForCascade so it only rewrites
   // role:tool / assistant.tool_calls messages without injecting a user-level
@@ -502,7 +533,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     if (isAuthFail) reportError(apiKey);
     if (isRateLimit) { markRateLimited(apiKey, 5 * 60 * 1000, modelKey); err.isRateLimit = true; err.isModelError = true; }
     if (isInternal) { reportInternalError(apiKey); err.isModelError = true; }
-    if (err.isModelError && !isRateLimit && !isInternal) {
+    if (err.isModelError && !isRateLimit && !isInternal && isPermanentModelCapabilityError(err.message)) {
       updateCapability(apiKey, modelKey, false, 'model_error');
     }
     recordRequest({
@@ -518,9 +549,10 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
         body: { error: { message: `${model} 已达速率限制，请稍后重试`, type: 'rate_limit_exceeded', retry_after_ms: rl.retryAfterMs || 60000 } },
       };
     }
+    const permanentModelError = err.isModelError && isPermanentModelCapabilityError(err.message);
     return {
-      status: err.isModelError ? 403 : 502,
-      body: { error: { message: sanitizeText(err.message), type: err.isModelError ? 'model_not_available' : 'upstream_error' } },
+      status: permanentModelError ? 403 : 502,
+      body: { error: { message: sanitizeText(err.message), type: permanentModelError ? 'model_not_available' : 'upstream_error' } },
     };
   }
 }
@@ -695,10 +727,16 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               reuseEntry = null;
             }
           }
-          if (!acct) {
-            acct = await waitForAccount(tried, abortController.signal, QUEUE_MAX_WAIT_MS, modelKey);
-            if (!acct) break;
-          }
+	          if (!acct) {
+	            acct = await waitForAccount(tried, abortController.signal, QUEUE_MAX_WAIT_MS, modelKey);
+	            if (!acct) {
+	              const activeCount = getAccountList().filter(a => a.status === 'active').length;
+	              lastErr = abortController.signal.aborted
+	                ? new Error('Client disconnected while waiting for an account')
+	                : new Error(`No eligible account available for ${model} after waiting ${Math.ceil(QUEUE_MAX_WAIT_MS / 1000)}s (active=${activeCount}, tried=${tried.length})`);
+	              break;
+	            }
+	          }
           tried.push(acct.apiKey);
           currentApiKey = acct.apiKey;
 
@@ -815,7 +853,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
             if (isAuthFail) reportError(currentApiKey);
             if (isRateLimit) { markRateLimited(currentApiKey, 5 * 60 * 1000, modelKey); err.isRateLimit = true; err.isModelError = true; }
             if (isInternal) { reportInternalError(currentApiKey); err.isModelError = true; }
-            if (err.isModelError && !isRateLimit && !isInternal) {
+            if (err.isModelError && !isRateLimit && !isInternal && isPermanentModelCapabilityError(err.message)) {
               updateCapability(currentApiKey, modelKey, false, 'model_error');
             }
             // Retry only if nothing has been streamed yet AND it's a retryable error
@@ -829,7 +867,11 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
         }
 
         // All attempts failed
-        log.error('Stream error after retries:', lastErr?.message);
+	        if (!lastErr) {
+	          const activeCount = getAccountList().filter(a => a.status === 'active').length;
+	          lastErr = new Error(`Stream failed before selecting an account for ${model} (active=${activeCount}, tried=${tried.length})`);
+	        }
+	        log.error('Stream error after retries:', lastErr.message);
         recordRequest({
           model, success: false, durationMs: Date.now() - startTime,
           accountId: currentApiKey, source, credit: 0, tokens: null,
@@ -841,9 +883,9 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           }
           // Check if failure is due to all accounts being rate-limited
           const rl = isAllRateLimited(modelKey);
-          const errMsg = rl.allLimited
-            ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
-            : sanitizeText(lastErr?.message || 'no accounts');
+	          const errMsg = rl.allLimited
+	            ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
+	            : sanitizeText(lastErr.message);
           send({ id, object: 'chat.completion.chunk', created, model,
             choices: [{ index: 0, delta: { content: `\n[Error: ${errMsg}]` }, finish_reason: 'stop' }] });
           res.write('data: [DONE]\n\n');

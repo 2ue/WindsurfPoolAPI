@@ -32,6 +32,10 @@ function rpmLimitFor(account) {
   return TIER_RPM[account.tier || 'unknown'] ?? 20;
 }
 
+function isTransientNetworkError(message = '') {
+  return /ENOTFOUND|EAI_AGAIN|ECONN|ETIMEDOUT|timeout|network|socket|TLS|fetch failed|pending stream|unexpected EOF/i.test(message);
+}
+
 function pruneRpmHistory(account, now) {
   if (!account._rpmHistory) account._rpmHistory = [];
   const cutoff = now - RPM_WINDOW_MS;
@@ -39,6 +43,13 @@ function pruneRpmHistory(account, now) {
     account._rpmHistory.shift();
   }
   return account._rpmHistory.length;
+}
+
+function hasActivePaidPlan(account) {
+  const planName = account.credits?.planName || '';
+  if (!/pro|trial|teams|enterprise/i.test(planName)) return false;
+  const planEnd = Date.parse(account.credits?.planEnd || '');
+  return Number.isNaN(planEnd) || planEnd > Date.now();
 }
 
 function saveAccounts() {
@@ -260,10 +271,13 @@ export function setAccountBlockedModels(id, blockedModels) {
  *   tier entitlement ∩ (models.js catalog) − account.blockedModels
  */
 export function isModelAllowedForAccount(account, modelKey) {
-  const tierModels = getTierModels(account.tier || 'unknown');
-  if (!tierModels.includes(modelKey)) return false;
   const blocked = account.blockedModels || [];
   if (blocked.includes(modelKey)) return false;
+  const capability = account.capabilities?.[modelKey];
+  if (capability?.ok === true) return true;
+  if (capability?.ok === false && capability.reason === 'model_error') return false;
+  const tierModels = getTierModels(account.tier || 'unknown');
+  if (!tierModels.includes(modelKey)) return false;
   return true;
 }
 
@@ -271,7 +285,16 @@ export function isModelAllowedForAccount(account, modelKey) {
 export function getAvailableModelsForAccount(account) {
   const tierModels = getTierModels(account.tier || 'unknown');
   const blocked = new Set(account.blockedModels || []);
-  return tierModels.filter(m => !blocked.has(m));
+  const denied = new Set(Object.entries(account.capabilities || {})
+    .filter(([, capability]) => capability?.ok === false && capability.reason === 'model_error')
+    .map(([modelKey]) => modelKey));
+  const confirmed = Object.entries(account.capabilities || {})
+    .filter(([modelKey, capability]) => capability?.ok === true && !blocked.has(modelKey))
+    .map(([modelKey]) => modelKey);
+  return Array.from(new Set([
+    ...tierModels.filter(m => !blocked.has(m) && !denied.has(m)),
+    ...confirmed,
+  ]));
 }
 
 /**
@@ -671,7 +694,7 @@ export function updateCapability(apiKey, modelKey, ok, reason = '') {
     lastCheck: Date.now(),
     reason,
   };
-  account.tier = inferTier(account.capabilities);
+  account.tier = hasActivePaidPlan(account) ? 'pro' : inferTier(account.capabilities);
   saveAccounts();
 }
 
@@ -680,7 +703,10 @@ export function updateCapability(apiKey, modelKey, ok, reason = '') {
  */
 function inferTier(caps) {
   const works = (m) => caps[m]?.ok === true;
-  if (works('claude-opus-4.6') || works('claude-sonnet-4.6')) return 'pro';
+  const proClaudeWorks = Object.entries(caps).some(([modelKey, cap]) =>
+    cap?.ok === true && /^claude-/.test(modelKey) && /(sonnet|opus)/.test(modelKey)
+  );
+  if (proClaudeWorks || works('claude-opus-4.6') || works('claude-sonnet-4.6')) return 'pro';
   if (works('gemini-2.5-flash') || works('gpt-4o-mini')) return 'free';
   // If everything we tried failed
   const checked = Object.keys(caps);
@@ -725,8 +751,11 @@ export async function probeAccount(id) {
       log.info(`  ${modelKey}: OK`);
     } catch (err) {
       const isRateLimit = /rate limit|rate_limit|too many requests|quota/i.test(err.message);
+      const isTransient = isTransientNetworkError(err.message) || /retryable error|stalled/i.test(err.message);
       if (isRateLimit) {
         log.info(`  ${modelKey}: RATE_LIMITED (skipped)`);
+      } else if (isTransient) {
+        log.info(`  ${modelKey}: TRANSIENT (${err.message.slice(0, 80)})`);
       } else {
         updateCapability(account.apiKey, modelKey, false, 'model_error');
         log.info(`  ${modelKey}: FAIL (${err.message.slice(0, 80)})`);
@@ -874,8 +903,15 @@ export async function initAuth() {
         await getUserStatus(a.apiKey, proxy);
         a._healthFails = 0;
       } catch (e) {
+        const msg = e.message || String(e);
+        if (isTransientNetworkError(msg)) {
+          if (a.credits) a.credits.lastError = msg;
+          else a.credits = { lastError: msg, fetchedAt: Date.now() };
+          log.warn(`Health probe ${a.email || a.id} transient failure (account kept active): ${msg}`);
+          continue;
+        }
         a._healthFails = (a._healthFails || 0) + 1;
-        log.warn(`Health probe ${a.email || a.id} failed (${a._healthFails}/${TOKEN_HEALTH_FAIL_LIMIT}): ${e.message}`);
+        log.warn(`Health probe ${a.email || a.id} failed (${a._healthFails}/${TOKEN_HEALTH_FAIL_LIMIT}): ${msg}`);
         if (a._healthFails >= TOKEN_HEALTH_FAIL_LIMIT) {
           a.status = 'expired';
           saveAccounts();

@@ -1812,6 +1812,188 @@ tbody tr:hover td { background: var(--surface-2); }
             <div class="text-sm text-muted">默认开启。支持 Anthropic / OpenAI / Google / DeepSeek / xAI 等厂商模型。</div>
           </div>
         </div>
+        <div class="field-row">
+          <div class="field" style="max-width:260px">
+            <label class="field-label">厂商</label>
+            <select id="identity-provider" class="select" onchange="App.loadIdentityPromptEditor()">
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI</option>
+              <option value="google">Google</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="xai">xAI</option>
+              <option value="alibaba">Alibaba</option>
+              <option value="moonshot">Moonshot AI</option>
+              <option value="zhipu">Zhipu AI</option>
+              <option value="minimax">MiniMax</option>
+              <option value="windsurf">Windsurf</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">身份提示词模板</label>
+            <textarea id="identity-template" class="textarea" rows="3"></textarea>
+            <div class="field-hint">可使用 <code>{model}</code> 占位符。模板为空时会保存为空字符串。</div>
+          </div>
+        </div>
+        <div class="field-row-actions">
+          <button class="btn btn-primary btn-sm" onclick="App.saveIdentityPrompt()">保存身份模板</button>
+          <button class="btn btn-outline btn-sm" onclick="App.resetIdentityPrompt()">恢复当前厂商默认模板</button>
+        </div>
+      </div>
+    </div>
+    <div class="section" style="margin-top:24px">
+      <div class="section-header">
+        <div class="section-title">提示词注入配置</div>
+      </div>
+      <div class="section-body">
+        <div class="section-desc" style="margin-bottom:12px">
+          控制服务端自动追加的语言提示与 Claude Code 工具调用显示策略。默认开启语言提示，但只追加到真实用户消息，避免混入工具返回结果。
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+          <label class="switch">
+            <input type="checkbox" id="pi-language-enabled">
+            <span class="switch-slider"></span>
+          </label>
+          <div>
+            <div style="font-weight:500">启用语言提示注入</div>
+            <div class="text-sm text-muted">用于让中文、日文、韩文请求在 Claude Code 大量英文上下文中保持对应语言。</div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field" style="max-width:260px">
+            <label class="field-label">注入位置</label>
+            <select id="pi-language-apply-to" class="select">
+              <option value="direct_user_only">仅真实用户消息</option>
+              <option value="latest_user">最后一条 user 消息</option>
+            </select>
+            <div class="field-hint">推荐保持“仅真实用户消息”，避免追加到 tool_result 后面。</div>
+          </div>
+          <div class="field">
+            <label class="field-label">中文模板</label>
+            <textarea id="pi-lang-zh" class="textarea" rows="2"></textarea>
+          </div>
+        </div>
+        <div class="field-row mt-3">
+          <div class="field">
+            <label class="field-label">日文模板</label>
+            <textarea id="pi-lang-ja" class="textarea" rows="2"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label">韩文模板</label>
+            <textarea id="pi-lang-ko" class="textarea" rows="2"></textarea>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;margin-top:16px">
+          <label class="switch">
+            <input type="checkbox" id="pi-suppress-tool-text">
+            <span class="switch-slider"></span>
+          </label>
+          <div>
+            <div style="font-weight:500">抑制工具调用前文本</div>
+            <div class="text-sm text-muted">Claude Code 使用 /v1/messages 调工具时，丢弃 tool_use 前的普通文本，避免先回答一次、工具后又回答一次。</div>
+          </div>
+        </div>
+        <div class="section-desc" style="margin:20px 0 12px">多轮对话包装</div>
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px">
+          <label class="switch">
+            <input type="checkbox" id="pi-conversation-wrapper-enabled">
+            <span class="switch-slider"></span>
+          </label>
+          <div>
+            <div style="font-weight:500">启用多轮对话包装</div>
+            <div class="text-sm text-muted">Cascade 需要把历史压成单条消息；关闭后只发送最新用户消息。</div>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">多轮对话包装模板</label>
+          <textarea id="pi-conversation-wrapper-content" class="textarea" rows="4"></textarea>
+          <div class="field-hint">可使用 <code>{history}</code> 和 <code>{latest}</code> 占位符。</div>
+        </div>
+        <div class="section-desc" style="margin:20px 0 12px">工具协议注入</div>
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+          <label class="switch">
+            <input type="checkbox" id="pi-tool-protocol-enabled">
+            <span class="switch-slider"></span>
+          </label>
+          <div>
+            <div style="font-weight:500">启用工具协议注入</div>
+            <div class="text-sm text-muted">关闭后不会把 OpenAI/Anthropic tools 转成 Cascade 可理解的工具协议。</div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label class="field-label">工具系统头</label>
+            <textarea id="pi-tool-system-header" class="textarea" rows="5"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label">工具用户头</label>
+            <textarea id="pi-tool-user-header" class="textarea" rows="5"></textarea>
+          </div>
+        </div>
+        <div class="field-row mt-3">
+          <div class="field">
+            <label class="field-label">工具用户尾</label>
+            <textarea id="pi-tool-user-footer" class="textarea" rows="3"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label">强制指定函数模板</label>
+            <textarea id="pi-tool-force-template" class="textarea" rows="3"></textarea>
+            <div class="field-hint">可使用 <code>{name}</code> 占位符。</div>
+          </div>
+        </div>
+        <div class="field-row mt-3">
+          <div class="field">
+            <label class="field-label">tool_choice=auto 后缀</label>
+            <textarea id="pi-tool-auto-suffix" class="textarea" rows="3"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label">tool_choice=required 后缀</label>
+            <textarea id="pi-tool-required-suffix" class="textarea" rows="3"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label">tool_choice=none 后缀</label>
+            <textarea id="pi-tool-none-suffix" class="textarea" rows="3"></textarea>
+          </div>
+        </div>
+        <div class="section-desc" style="margin:20px 0 12px">Cascade Section Override</div>
+        <div class="field-row">
+          <div class="field">
+            <label class="field-label"><input type="checkbox" id="pi-wt-add-enabled"> 有工具：additional_instructions</label>
+            <textarea id="pi-wt-add-content" class="textarea" rows="3"></textarea>
+            <div class="field-hint">可使用 <code>{toolPreamble}</code> 和 <code>{reinforcement}</code>。</div>
+          </div>
+          <div class="field">
+            <label class="field-label"><input type="checkbox" id="pi-wt-reinforce-enabled"> 有工具：reinforcement</label>
+            <textarea id="pi-wt-reinforce-content" class="textarea" rows="3"></textarea>
+          </div>
+        </div>
+        <div class="field-row mt-3">
+          <div class="field">
+            <label class="field-label"><input type="checkbox" id="pi-wt-tool-enabled"> 有工具：tool_calling_section</label>
+            <textarea id="pi-wt-tool-content" class="textarea" rows="3"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label"><input type="checkbox" id="pi-wt-comm-enabled"> 有工具：communication_section</label>
+            <textarea id="pi-wt-comm-content" class="textarea" rows="5"></textarea>
+          </div>
+        </div>
+        <div class="field-row mt-3">
+          <div class="field">
+            <label class="field-label"><input type="checkbox" id="pi-nt-tool-enabled"> 无工具：tool_calling_section</label>
+            <textarea id="pi-nt-tool-content" class="textarea" rows="3"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label"><input type="checkbox" id="pi-nt-add-enabled"> 无工具：additional_instructions</label>
+            <textarea id="pi-nt-add-content" class="textarea" rows="3"></textarea>
+          </div>
+          <div class="field">
+            <label class="field-label"><input type="checkbox" id="pi-nt-comm-enabled"> 无工具：communication_section</label>
+            <textarea id="pi-nt-comm-content" class="textarea" rows="5"></textarea>
+          </div>
+        </div>
+        <div class="field-row-actions">
+          <button class="btn btn-primary btn-sm" onclick="App.savePromptInjectionConfig()">保存配置</button>
+          <button class="btn btn-outline btn-sm" onclick="App.resetPromptInjectionConfig()">恢复默认</button>
+        </div>
       </div>
     </div>
   </section>
@@ -1847,6 +2029,7 @@ const App = {
   statsMetric: 'requests',
   statsData: null,
   accountModelCatalog: {},
+  identityPrompts: {},
 
   // Register a polling loader. Guarantees exactly one timer per key even if
   // the loader is invoked repeatedly, and auto-pauses while the tab is
@@ -3333,11 +3516,63 @@ const App = {
 
   // ─── Experimental features ───────────────────
   async loadExperimental() {
-    const d = await this.api('GET', '/experimental');
+    const [d, pi, identity] = await Promise.all([
+      this.api('GET', '/experimental'),
+      this.api('GET', '/prompt-injection').catch(() => null),
+      this.api('GET', '/identity-prompts').catch(() => null),
+    ]);
     const cb = document.getElementById('exp-cascade-reuse');
     if (cb) cb.checked = !!d.flags?.cascadeConversationReuse;
     const idCb = document.getElementById('exp-identity-prompt');
     if (idCb) idCb.checked = !!d.flags?.modelIdentityPrompt;
+	    if (pi) {
+	      const lang = pi.languageHint || {};
+	      const templates = lang.templates || {};
+	      const tool = pi.toolProtocol || {};
+	      const sections = pi.cascadeSections || {};
+	      const wt = sections.withTools || {};
+	      const nt = sections.noTools || {};
+	      const setChecked = (id, value) => { const el = document.getElementById(id); if (el) el.checked = value !== false; };
+	      const setValue = (id, value) => { const el = document.getElementById(id); if (el) el.value = value || ''; };
+	      const enabled = document.getElementById('pi-language-enabled');
+	      const applyTo = document.getElementById('pi-language-apply-to');
+	      const zh = document.getElementById('pi-lang-zh');
+      const ja = document.getElementById('pi-lang-ja');
+      const ko = document.getElementById('pi-lang-ko');
+      const suppress = document.getElementById('pi-suppress-tool-text');
+      if (enabled) enabled.checked = lang.enabled !== false;
+      if (applyTo) applyTo.value = lang.applyTo || 'direct_user_only';
+      if (zh) zh.value = templates.zh || '';
+	      if (ja) ja.value = templates.ja || '';
+	      if (ko) ko.value = templates.ko || '';
+	      if (suppress) suppress.checked = pi.anthropicMessages?.suppressTextWithToolUse !== false;
+	      setChecked('pi-conversation-wrapper-enabled', pi.conversationWrapper?.enabled);
+	      setValue('pi-conversation-wrapper-content', pi.conversationWrapper?.content);
+	      setChecked('pi-tool-protocol-enabled', tool.enabled);
+	      setValue('pi-tool-system-header', tool.systemHeader);
+	      setValue('pi-tool-user-header', tool.userHeader);
+	      setValue('pi-tool-user-footer', tool.userFooter);
+	      setValue('pi-tool-force-template', tool.forceFunctionTemplate);
+	      setValue('pi-tool-auto-suffix', tool.suffixes?.auto);
+	      setValue('pi-tool-required-suffix', tool.suffixes?.required);
+	      setValue('pi-tool-none-suffix', tool.suffixes?.none);
+	      setChecked('pi-wt-add-enabled', wt.additionalInstructions?.enabled);
+	      setValue('pi-wt-add-content', wt.additionalInstructions?.content);
+	      setChecked('pi-wt-reinforce-enabled', wt.additionalReinforcement?.enabled);
+	      setValue('pi-wt-reinforce-content', wt.additionalReinforcement?.content);
+	      setChecked('pi-wt-tool-enabled', wt.toolCallingSection?.enabled);
+	      setValue('pi-wt-tool-content', wt.toolCallingSection?.content);
+	      setChecked('pi-wt-comm-enabled', wt.communicationSection?.enabled);
+	      setValue('pi-wt-comm-content', wt.communicationSection?.content);
+	      setChecked('pi-nt-tool-enabled', nt.toolCallingSection?.enabled);
+	      setValue('pi-nt-tool-content', nt.toolCallingSection?.content);
+	      setChecked('pi-nt-add-enabled', nt.additionalInstructions?.enabled);
+	      setValue('pi-nt-add-content', nt.additionalInstructions?.content);
+	      setChecked('pi-nt-comm-enabled', nt.communicationSection?.enabled);
+	      setValue('pi-nt-comm-content', nt.communicationSection?.content);
+	    }
+    this.identityPrompts = identity || {};
+    this.loadIdentityPromptEditor();
     const pool = d.conversationPool || {};
     document.getElementById('exp-pool-cards').innerHTML = `
       <div class="card info">
@@ -3366,6 +3601,123 @@ const App = {
     } catch (e) {
       this.toast('切换失败：' + e.message, 'error');
       this.loadExperimental();
+    }
+  },
+
+  loadIdentityPromptEditor() {
+    const provider = document.getElementById('identity-provider')?.value || 'anthropic';
+    const textarea = document.getElementById('identity-template');
+    if (textarea) textarea.value = this.identityPrompts?.[provider] || '';
+  },
+
+  async saveIdentityPrompt() {
+    const provider = document.getElementById('identity-provider')?.value || 'anthropic';
+    const template = document.getElementById('identity-template')?.value || '';
+    try {
+      await this.api('PUT', '/identity-prompts', { [provider]: template });
+      this.toast('身份提示词模板已保存', 'success');
+      this.loadExperimental();
+    } catch (e) {
+      this.toast('保存失败：' + e.message, 'error');
+    }
+  },
+
+  async resetIdentityPrompt() {
+    const provider = document.getElementById('identity-provider')?.value || 'anthropic';
+    try {
+      await this.api('DELETE', '/identity-prompts', { provider });
+      this.toast('已恢复当前厂商默认身份模板', 'success');
+      this.loadExperimental();
+    } catch (e) {
+      this.toast('恢复失败：' + e.message, 'error');
+    }
+  },
+
+  async savePromptInjectionConfig() {
+    const checked = (id) => !!document.getElementById(id)?.checked;
+    const value = (id) => document.getElementById(id)?.value || '';
+    const payload = {
+      languageHint: {
+        enabled: checked('pi-language-enabled'),
+        applyTo: value('pi-language-apply-to') || 'direct_user_only',
+        templates: {
+          zh: value('pi-lang-zh'),
+          ja: value('pi-lang-ja'),
+          ko: value('pi-lang-ko'),
+        },
+      },
+      anthropicMessages: {
+        suppressTextWithToolUse: checked('pi-suppress-tool-text'),
+      },
+      conversationWrapper: {
+        enabled: checked('pi-conversation-wrapper-enabled'),
+        content: value('pi-conversation-wrapper-content'),
+      },
+      toolProtocol: {
+        enabled: checked('pi-tool-protocol-enabled'),
+        systemHeader: value('pi-tool-system-header'),
+        userHeader: value('pi-tool-user-header'),
+        userFooter: value('pi-tool-user-footer'),
+        forceFunctionTemplate: value('pi-tool-force-template'),
+        suffixes: {
+          auto: value('pi-tool-auto-suffix'),
+          required: value('pi-tool-required-suffix'),
+          none: value('pi-tool-none-suffix'),
+        },
+      },
+      cascadeSections: {
+        withTools: {
+          additionalInstructions: {
+            enabled: checked('pi-wt-add-enabled'),
+            content: value('pi-wt-add-content'),
+          },
+          additionalReinforcement: {
+            enabled: checked('pi-wt-reinforce-enabled'),
+            content: value('pi-wt-reinforce-content'),
+          },
+          toolCallingSection: {
+            enabled: checked('pi-wt-tool-enabled'),
+            content: value('pi-wt-tool-content'),
+          },
+          communicationSection: {
+            enabled: checked('pi-wt-comm-enabled'),
+            content: value('pi-wt-comm-content'),
+          },
+        },
+        noTools: {
+          toolCallingSection: {
+            enabled: checked('pi-nt-tool-enabled'),
+            content: value('pi-nt-tool-content'),
+          },
+          additionalInstructions: {
+            enabled: checked('pi-nt-add-enabled'),
+            content: value('pi-nt-add-content'),
+          },
+          communicationSection: {
+            enabled: checked('pi-nt-comm-enabled'),
+            content: value('pi-nt-comm-content'),
+          },
+        },
+      },
+    };
+    try {
+      await this.api('PUT', '/prompt-injection', payload);
+      this.toast('提示词注入配置已保存', 'success');
+      this.loadExperimental();
+    } catch (e) {
+      this.toast('保存失败：' + e.message, 'error');
+    }
+  },
+
+  async resetPromptInjectionConfig() {
+    const ok = await this.confirm('恢复默认配置', '提示词注入配置将恢复为默认开启、温和语言模板、仅真实用户消息注入。确定继续吗？', { okText: '恢复默认' });
+    if (!ok) return;
+    try {
+      await this.api('DELETE', '/prompt-injection');
+      this.toast('已恢复默认提示词注入配置', 'success');
+      this.loadExperimental();
+    } catch (e) {
+      this.toast('恢复失败：' + e.message, 'error');
     }
   },
 

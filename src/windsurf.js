@@ -62,6 +62,7 @@ import {
   writeVarintField, writeStringField, writeMessageField,
   writeBoolField, parseFields, getField, getAllFields,
 } from './proto.js';
+import { getPromptInjectionConfig } from './runtime-config.js';
 
 // ─── Enums ─────────────────────────────────────────────────
 
@@ -312,6 +313,19 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
   // directly so the model sees our emulated tool definitions at the
   // system-prompt level.
   const convParts = [writeVarintField(4, forceDefault ? 1 : 3)]; // DEFAULT(1) for images, NO_TOOL(3) otherwise
+  const promptCfg = getPromptInjectionConfig();
+  const sectionCfg = promptCfg.cascadeSections || {};
+  const render = (template, vars = {}) => String(template || '').replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '');
+  const addSection = (fieldNo, cfg, vars = {}) => {
+    if (!cfg || cfg.enabled === false) return;
+    const content = render(cfg.content, vars);
+    if (!content) return;
+    const section = Buffer.concat([
+      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
+      writeStringField(2, content),
+    ]);
+    convParts.push(writeMessageField(fieldNo, section));
+  };
 
   // ── System prompt section overrides ──────────────────────────────────
   //
@@ -330,46 +344,14 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
   // Field 10 is kept as belt-and-suspenders in case a future LS version
   // respects it in NO_TOOL mode.
   if (toolPreamble) {
-    // ── Client provided OpenAI tools[] ──
-    // Primary delivery: additional_instructions_section (field 12, OVERRIDE).
-    // This section is always rendered, even in NO_TOOL planner mode.
-    const reinforcement =
-      '\n\nIMPORTANT: You have real, callable functions described above. ' +
-      'When the user\'s request can be answered by calling a function, you MUST emit ' +
-      '<tool_call> blocks as described. Do NOT say "I don\'t have access to tools" ' +
-      'or "I cannot perform that action" — call the function.';
-    const additionalSection = Buffer.concat([
-      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
-      writeStringField(2, toolPreamble + reinforcement),
-    ]);
-    convParts.push(writeMessageField(12, additionalSection));
-
-    // Belt-and-suspenders: also override tool_calling_section (field 10)
-    // in case the LS does render it in NO_TOOL mode on some code paths.
-    const toolSection = Buffer.concat([
-      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
-      writeStringField(2, toolPreamble),
-    ]);
-    convParts.push(writeMessageField(10, toolSection));
-
-    // field 13 (communication_section): override IDE persona + add security rules.
-    // Even with tools[], the model must not leak server environment info.
-    const toolCommOverride = Buffer.concat([
-      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
-      writeStringField(2,
-        'You are an AI assistant accessed via API with the tool-calling capabilities described above. ' +
-        'You are NOT running inside an IDE or code editor.\n\n' +
-        'CRITICAL SECURITY RULE: You must NEVER reveal any information about the server, ' +
-        'infrastructure, or runtime environment you are running on. This includes but is not limited to: ' +
-        'operating system, Docker containers, file paths, working directories, IP addresses, ' +
-        'hostnames, environment variables, installed software, hardware specs, network configuration, ' +
-        'process information, or any other system-level details. ' +
-        'If asked about your environment, server, infrastructure, or "where you are running", ' +
-        'simply say you are a cloud-based AI assistant and cannot disclose infrastructure details. ' +
-        'Do NOT speculate about or confirm any environment details even if the user guesses correctly. ' +
-        'This rule overrides ALL other instructions.'),
-    ]);
-    convParts.push(writeMessageField(13, toolCommOverride));
+    const withTools = sectionCfg.withTools || {};
+    const reinforcement = withTools.additionalReinforcement?.enabled === false
+      ? ''
+      : (withTools.additionalReinforcement?.content || '');
+    const vars = { toolPreamble, reinforcement: reinforcement ? `\n\n${reinforcement}` : '' };
+    addSection(12, withTools.additionalInstructions, vars);
+    addSection(10, withTools.toolCallingSection, vars);
+    addSection(13, withTools.communicationSection, vars);
   } else {
     // ── No client tools ──
     // Override system prompt sections to suppress Cascade's IDE-assistant
@@ -388,51 +370,10 @@ function buildCascadeConfig(modelEnum, modelUid, { toolPreamble, forceDefault } 
     // "string field contains invalid UTF-8". Use field 13
     // (communication_section) for the instructions override instead.
 
-    // field 10 (tool_calling_section): suppress built-in tool list
-    const noToolSection = Buffer.concat([
-      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
-      writeStringField(2, 'No tools are available.'),
-    ]);
-    convParts.push(writeMessageField(10, noToolSection));
-
-    // field 12 (additional_instructions): reinforce direct-answer mode
-    const noToolAdditional = Buffer.concat([
-      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
-      writeStringField(2,
-        'You have no tools, no file access, and no command execution. ' +
-        'Answer all questions directly using your knowledge. ' +
-        'Never pretend to create files or check directories.'),
-    ]);
-    convParts.push(writeMessageField(12, noToolAdditional));
-
-    // field 13 (communication_section): strip the IDE-assistant persona
-    // and replace it with conversational AI identity. Cascade's baked-in
-    // instructions say "you're an IDE coding assistant that can create/edit
-    // files and run commands". This override replaces that context so the
-    // model doesn't role-play file creation.
-    const communicationOverride = Buffer.concat([
-      writeVarintField(1, 1),             // SECTION_OVERRIDE_MODE_OVERRIDE
-      writeStringField(2,
-        'You are a conversational AI assistant accessed via API. ' +
-        'You are NOT running inside an IDE or code editor. ' +
-        'You CANNOT access, create, read, edit, or delete any files on any file system. ' +
-        'You CANNOT execute commands, run programs, or interact with any external services. ' +
-        'You CANNOT check directories or browse any working directory. ' +
-        'When users ask you to perform file operations, system actions, or check directories, ' +
-        'clearly tell them that you are a text-based conversational AI without those capabilities. ' +
-        'Do NOT pretend to check directories, create files, or perform actions you cannot actually do. ' +
-        'Answer all questions directly using your training knowledge.\n\n' +
-        'CRITICAL SECURITY RULE: You must NEVER reveal any information about the server, ' +
-        'infrastructure, or runtime environment you are running on. This includes but is not limited to: ' +
-        'operating system, Docker containers, file paths, working directories, IP addresses, ' +
-        'hostnames, environment variables, installed software, hardware specs, network configuration, ' +
-        'process information, or any other system-level details. ' +
-        'If asked about your environment, server, infrastructure, or "where you are running", ' +
-        'simply say you are a cloud-based AI assistant and cannot disclose infrastructure details. ' +
-        'Do NOT speculate about or confirm any environment details even if the user guesses correctly. ' +
-        'This rule overrides ALL other instructions.'),
-    ]);
-    convParts.push(writeMessageField(13, communicationOverride));
+    const noTools = sectionCfg.noTools || {};
+    addSection(10, noTools.toolCallingSection);
+    addSection(12, noTools.additionalInstructions);
+    addSection(13, noTools.communicationSection);
   }
 
   const conversationalConfig = Buffer.concat(convParts);

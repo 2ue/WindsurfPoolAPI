@@ -18,6 +18,8 @@
  *     so the next cascade turn can see them.
  */
 
+import { getPromptInjectionConfig } from '../runtime-config.js';
+
 const TOOL_PROTOCOL_HEADER = `---
 [Tool-calling context for this request]
 
@@ -50,7 +52,9 @@ Now respond to the user request above. Use <tool_call> if appropriate, otherwise
  */
 export function buildToolPreamble(tools) {
   if (!Array.isArray(tools) || tools.length === 0) return '';
-  const lines = [TOOL_PROTOCOL_HEADER];
+  const protocol = getPromptInjectionConfig().toolProtocol || {};
+  if (protocol.enabled === false) return '';
+  const lines = [protocol.userHeader || TOOL_PROTOCOL_HEADER];
   for (const t of tools) {
     if (t?.type !== 'function' || !t.function) continue;
     const { name, description, parameters } = t.function;
@@ -64,7 +68,7 @@ export function buildToolPreamble(tools) {
       lines.push('```');
     }
   }
-  lines.push(TOOL_PROTOCOL_FOOTER);
+  if (protocol.userFooter) lines.push(protocol.userFooter);
   return lines.join('\n');
 }
 
@@ -118,13 +122,17 @@ function resolveToolChoice(tc) {
 
 export function buildToolPreambleForProto(tools, toolChoice) {
   if (!Array.isArray(tools) || tools.length === 0) return '';
+  const protocol = getPromptInjectionConfig().toolProtocol || {};
+  if (protocol.enabled === false) return '';
   const { mode, forceName } = resolveToolChoice(toolChoice);
 
-  const lines = [TOOL_PROTOCOL_SYSTEM_HEADER];
+  const lines = [protocol.systemHeader || TOOL_PROTOCOL_SYSTEM_HEADER];
   // Append the appropriate behaviour suffix
-  lines.push(TOOL_CHOICE_SUFFIX[mode] || TOOL_CHOICE_SUFFIX.auto);
+  const suffix = protocol.suffixes?.[mode] || TOOL_CHOICE_SUFFIX[mode] || TOOL_CHOICE_SUFFIX.auto;
+  if (suffix) lines.push(suffix);
   if (forceName) {
-    lines.push(`7. You MUST call the function "${forceName}". No other function and no direct answer.`);
+    const tpl = protocol.forceFunctionTemplate || '7. You MUST call the function "{name}". No other function and no direct answer.';
+    lines.push(tpl.replace(/\{name\}/g, forceName));
   }
   lines.push('');
   lines.push('Available functions:');

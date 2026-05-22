@@ -16,7 +16,11 @@ import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServer, startLanguageServer, isLanguageServerRunning } from '../langserver.js';
 import { getStats, resetStats, recordRequest, getUsageSnapshot, exportUsage, importUsage, pruneDetails, pruneDays } from './stats.js';
 import { cacheStats, cacheClear } from '../cache.js';
-import { getExperimental, setExperimental, getIdentityPrompts, setIdentityPrompts, resetIdentityPrompt } from '../runtime-config.js';
+import {
+  getExperimental, setExperimental,
+  getIdentityPrompts, setIdentityPrompts, resetIdentityPrompt,
+  getPromptInjectionConfig, setPromptInjectionConfig, resetPromptInjectionConfig,
+} from '../runtime-config.js';
 import { poolStats as convPoolStats, poolClear as convPoolClear } from '../conversation-pool.js';
 import { getLogs, subscribeToLogs, unsubscribeFromLogs } from './logger.js';
 import { getProxyConfig, setGlobalProxy, setAccountProxy, removeProxy, getEffectiveProxy } from './proxy-config.js';
@@ -111,6 +115,19 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     const provider = body?.provider || null;
     const prompts = resetIdentityPrompt(provider);
     return json(res, 200, { success: true, prompts });
+  }
+
+  // ─── Prompt injection controls ─────────────────────────
+  if (subpath === '/prompt-injection' && method === 'GET') {
+    return json(res, 200, getPromptInjectionConfig());
+  }
+  if (subpath === '/prompt-injection' && method === 'PUT') {
+    const promptInjection = setPromptInjectionConfig(body || {});
+    return json(res, 200, { success: true, promptInjection });
+  }
+  if (subpath === '/prompt-injection' && method === 'DELETE') {
+    const promptInjection = resetPromptInjectionConfig();
+    return json(res, 200, { success: true, promptInjection });
   }
 
   // ─── Cache ────────────────────────────────────────────

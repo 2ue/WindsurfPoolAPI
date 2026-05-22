@@ -3,12 +3,14 @@ node_modules/
 accounts.json
 proxy.json
 runtime-config.json
+model-access.json
 stats.json
 data/
 logs/
 *.log
 
 # Release artifacts — large binaries, uploaded to GitHub Releases
+bin/
 dist/
 *.tar.gz
 *.zip

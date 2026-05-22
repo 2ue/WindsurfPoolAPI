@@ -14,6 +14,7 @@ import { log } from './config.js';
 import { extractImages } from './image.js';
 import { grpcFrame, grpcUnary, grpcStream } from './grpc.js';
 import { getLsEntryByPort } from './langserver.js';
+import { getPromptInjectionConfig } from './runtime-config.js';
 import {
   buildRawGetChatMessageRequest, parseRawResponse,
   buildInitializePanelStateRequest,
@@ -63,6 +64,19 @@ function cascadeHistoryBudget(modelUid) {
     return positiveIntEnv('CASCADE_1M_HISTORY_BYTES', 900_000);
   }
   return normal;
+}
+
+function renderTemplate(template, vars = {}) {
+  return String(template || '').replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? '');
+}
+
+function buildMultiTurnCascadeText(history, latestText) {
+  const wrapper = getPromptInjectionConfig().conversationWrapper;
+  if (wrapper?.enabled === false) return latestText;
+  return renderTemplate(wrapper?.content, {
+    history,
+    latest: latestText,
+  });
 }
 
 // ── Fake workspace scaffold ────────────────────────────────
@@ -327,7 +341,7 @@ export class WindsurfClient {
         }
         const latest = convo[convo.length - 1];
         const extracted = await extractImages(latest?.content ?? '');
-        text = `The following is a multi-turn conversation. You MUST remember and use all information from prior turns.\n\n${lines.join('\n\n')}\n\n<human>\n${extracted.text}\n</human>`;
+        text = buildMultiTurnCascadeText(lines.join('\n\n'), extracted.text);
         images = extracted.images;
         if (sysText) text = sysText + '\n\n' + text;
       }
@@ -361,7 +375,7 @@ export class WindsurfClient {
           }
           const latest = convo[convo.length - 1];
           const extracted = await extractImages(latest?.content ?? '');
-          text = `The following is a multi-turn conversation. You MUST remember and use all information from prior turns.\n\n${lines.join('\n\n')}\n\n<human>\n${extracted.text}\n</human>`;
+          text = buildMultiTurnCascadeText(lines.join('\n\n'), extracted.text);
           if (sysText) text = sysText + '\n\n' + text;
           log.info('Cascade: rebuilt full history after resume failure');
         }
