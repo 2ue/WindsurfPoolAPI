@@ -216,9 +216,14 @@ code {
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 280px));
   gap: 14px;
   margin-bottom: 24px;
+  justify-content: start;
+  align-items: stretch;
+}
+.metrics-grid.compact {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 220px));
 }
 
 /* ─── Section Block ───────────────────────────── */
@@ -312,7 +317,8 @@ code {
 .btn-xs { padding: 3px 8px; font-size: 11px; }
 .btn-icon { padding: 7px; }
 
-.btn-group { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.btn-group { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.btn-group.nowrap { flex-wrap: nowrap; }
 
 /* ─── Switch ──────────────────────────────────── */
 .switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
@@ -380,6 +386,10 @@ code {
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   align-items: end;
+}
+.field-row.constrained {
+  grid-template-columns: minmax(140px, 180px) minmax(360px, 620px) minmax(160px, 220px);
+  justify-content: start;
 }
 .field-row-actions {
   display: flex;
@@ -463,6 +473,42 @@ table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+}
+#accounts-table {
+  min-width: 1480px;
+  table-layout: fixed;
+}
+#accounts-table th:nth-child(1), #accounts-table td:nth-child(1) { width: 44px; }
+#accounts-table th:nth-child(2), #accounts-table td:nth-child(2) { width: 100px; }
+#accounts-table th:nth-child(3), #accounts-table td:nth-child(3) { width: 190px; }
+#accounts-table th:nth-child(4), #accounts-table td:nth-child(4) { width: 70px; }
+#accounts-table th:nth-child(5), #accounts-table td:nth-child(5) { width: 96px; }
+#accounts-table th:nth-child(6), #accounts-table td:nth-child(6) { width: 160px; }
+#accounts-table th:nth-child(7), #accounts-table td:nth-child(7) { width: 150px; }
+#accounts-table th:nth-child(8), #accounts-table td:nth-child(8) { width: 104px; }
+#accounts-table th:nth-child(9), #accounts-table td:nth-child(9) { width: 98px; }
+#accounts-table th:nth-child(10), #accounts-table td:nth-child(10) { width: 60px; }
+#accounts-table th:nth-child(11), #accounts-table td:nth-child(11) { width: 100px; }
+#accounts-table th:nth-child(12), #accounts-table td:nth-child(12) { width: 115px; }
+#accounts-table th:nth-child(13), #accounts-table td:nth-child(13) { width: 210px; }
+#accounts-table td:nth-child(3),
+#accounts-table td:nth-child(11),
+#accounts-table td:nth-child(12) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#accounts-table .account-actions {
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  gap: 6px;
+  justify-content: start;
+}
+#accounts-table .account-cost-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  white-space: nowrap;
 }
 thead th {
   text-align: left;
@@ -1226,6 +1272,8 @@ tbody tr:hover td { background: var(--surface-2); }
   .sidebar .brand { justify-content: center; padding: 20px 0; }
   .sidebar nav a { justify-content: center; padding: 10px; }
   .main { margin-left: 60px; width: calc(100% - 60px); padding: 20px 16px; }
+  .metrics-grid, .metrics-grid.compact { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .field-row.constrained { grid-template-columns: 1fr; }
   .detail-grid, .chart-grid, .chart-pie-body { grid-template-columns: 1fr; }
   .chart-pie-body canvas { margin: 0 auto; }
 }
@@ -1451,19 +1499,19 @@ tbody tr:hover td { background: var(--surface-2); }
         </div>
       </div>
       <div class="section-body">
-        <div class="field-row">
-          <div class="field" style="max-width:180px">
+        <div class="field-row constrained">
+          <div class="field">
             <label class="field-label">类型</label>
             <select id="acc-type" class="select">
               <option value="api_key">API Key</option>
               <option value="token">Auth Token</option>
             </select>
           </div>
-          <div class="field" style="flex:2">
+          <div class="field">
             <label class="field-label">Key / Token</label>
             <input id="acc-key" class="input" placeholder="粘贴 API Key 或 Auth Token...">
           </div>
-          <div class="field" style="max-width:200px">
+          <div class="field">
             <label class="field-label">标签</label>
             <input id="acc-label" class="input" placeholder="可选">
           </div>
@@ -1712,7 +1760,7 @@ tbody tr:hover td { background: var(--surface-2); }
       </div>
     </div>
 
-    <div class="metrics-grid" id="stats-cards"></div>
+    <div class="metrics-grid compact" id="stats-cards"></div>
 
     <div class="chart chart-main">
       <div class="chart-header">
@@ -1822,7 +1870,7 @@ tbody tr:hover td { background: var(--surface-2); }
         <div class="page-subtitle">追踪错误账号和异常状态</div>
       </div>
     </div>
-    <div class="metrics-grid" id="ban-cards"></div>
+    <div class="metrics-grid compact" id="ban-cards"></div>
     <div class="section">
       <div class="section-header">
         <div class="section-title">账号健康状况</div>
@@ -1865,7 +1913,7 @@ tbody tr:hover td { background: var(--surface-2); }
             <div class="text-sm text-muted">默认关闭。开启后对当前对话池立即生效。</div>
           </div>
         </div>
-        <div class="metrics-grid" id="exp-pool-cards"></div>
+        <div class="metrics-grid compact" id="exp-pool-cards"></div>
         <div style="margin-top:12px">
           <button class="btn btn-outline btn-sm" onclick="App.clearConversationPool()">清空对话池</button>
           <button class="btn btn-ghost btn-sm" onclick="App.loadExperimental()">刷新</button>
@@ -2507,7 +2555,7 @@ const App = {
       const rpmPct = rpmLimit > 0 ? Math.min(100, Math.round((rpmUsed / rpmLimit) * 100)) : 0;
       const rpmColor = rpmPct >= 90 ? 'var(--error)' : rpmPct >= 60 ? 'var(--warn, #f59e0b)' : 'var(--success, #10b981)';
       const rpmCell = rpmLimit > 0
-        ? `<div style="min-width:90px">
+        ? `<div style="min-width:0">
             <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:2px">
               <span>${rpmUsed}/${rpmLimit}</span><span style="color:${rpmColor}">${rpmPct}%</span>
             </div>
@@ -2519,11 +2567,11 @@ const App = {
 
       const cr = a.credits || null;
       const costUsage = a.costUsage || { todayUsd: 0, weekUsd: 0 };
-      const costCell = `<div style="min-width:120px">
-        <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:2px">
+      const costCell = `<div style="min-width:0">
+        <div class="text-xs account-cost-line" style="margin-bottom:2px">
           <span style="color:var(--text-dim)">今日已用</span><strong>${this._fmtUsd(costUsage.todayUsd || 0)}</strong>
         </div>
-        <div class="text-xs" style="display:flex;justify-content:space-between">
+        <div class="text-xs account-cost-line">
           <span style="color:var(--text-dim)">本周已用</span><strong>${this._fmtUsd(costUsage.weekUsd || 0)}</strong>
         </div>
       </div>`;
@@ -2560,7 +2608,7 @@ const App = {
           cr.lastError ? `Last error: ${cr.lastError}` : '',
         ].filter(Boolean).join('\n');
 
-        creditCell = `<div style="min-width:140px" title="${this.esc(tipLines)}">
+        creditCell = `<div style="min-width:0" title="${this.esc(tipLines)}">
             <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:3px">
               <span style="font-weight:600">${this.esc(planName.slice(0, 10))}</span>
               <span class="text-dim">${fetchedAgo}</span>
@@ -2587,7 +2635,7 @@ const App = {
           <code style="cursor:pointer" title="点击复制" onclick="App.copyKey('${this.esc(a.apiKey)}')">${a.keyPrefix}</code>
         </td>
         <td class="nowrap">
-          <div class="btn-group">
+          <div class="account-actions">
             <button class="btn btn-primary btn-xs" onclick="App.openAccountDetail('${a.id}')" title="查看账号详情">详情</button>
             <button class="btn btn-ghost btn-xs" onclick="App.probeAccount('${a.id}')" title="探测能力">探测</button>
             <button class="btn btn-ghost btn-xs" onclick="App.refreshCredits('${a.id}')" title="刷新余额">余额</button>
