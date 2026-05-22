@@ -8,6 +8,7 @@
  *   - Per-(api-path, model) aggregation with a bounded details[] ring buffer
  *   - Export / import with dedup so long-running history survives restarts
  *   - Windsurf-specific credit spend tracking (credit multiplier × requests)
+ *   - USD cost accounting from the pricing module when a model price exists
  *
  * Migration: if stats.json on disk is v1 (old flat modelCounts / hourlyBuckets),
  * we seed the aggregate totals from it on first load and move on — per-request
@@ -16,6 +17,7 @@
 
 import { readFileSync, writeFileSync, renameSync, existsSync } from 'fs';
 import { join } from 'path';
+import { calculateUsageCost } from '../pricing.js';
 
 // Lazy-resolved reference to auth.js (avoids circular-import at parse time).
 let _getAccountList = null;
@@ -37,7 +39,7 @@ function resolveAccountEmail(apiKey) {
 }
 
 const STATS_FILE = join(process.cwd(), 'stats.json');
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 // Cap per-(api,model) Details[] to avoid unbounded memory / file growth.
 // 500 entries × ~250 bytes each ≈ 125 KB per model. With 30 models that's
@@ -58,13 +60,18 @@ function freshState() {
     failureCount: 0,
     totalTokens: 0,
     totalCredits: 0,
-    apis: {},              // { "POST /v1/chat/completions": { totalRequests, totalTokens, totalCredits, models: {} } }
+    totalCostUsd: 0,
+    apis: {},              // { "POST /v1/chat/completions": { totalRequests, totalTokens, totalCredits, totalCostUsd, models: {} } }
     requestsByDay: {},     // { "2026-04-20": 12 }
     requestsByHour: {},    // { "09": 4 }  aggregated across all days (0-23 bucket)
     tokensByDay: {},       // { "2026-04-20": 9876 }
     tokensByHour: {},      // { "09": 1234 }
     creditsByDay: {},      // Windsurf-specific: sum of credit multipliers spent per day
     creditsByHour: {},
+    costByDay: {},         // USD cost, only for priced models
+    costByHour: {},
+    accountCostByDay: {},  // { accountEmailOrId: { "2026-04-20": 0.123 } }
+    accountCostByHour: {}, // { accountEmailOrId: { "2026-04-20T09": 0.012 } }
   };
 }
 
@@ -134,6 +141,15 @@ function loadFromDisk() {
     _state.tokensByHour    = raw.tokensByHour    || {};
     _state.creditsByDay    = raw.creditsByDay    || {};
     _state.creditsByHour   = raw.creditsByHour   || {};
+    _state.totalCostUsd    = raw.totalCostUsd     || 0;
+    _state.costByDay       = raw.costByDay        || {};
+    _state.costByHour      = raw.costByHour       || {};
+    _state.accountCostByDay  = raw.accountCostByDay  || {};
+    _state.accountCostByHour = raw.accountCostByHour || {};
+    if (!raw.accountCostByDay && !raw.accountCostByHour) {
+      rebuildAccountCostBucketsFromDetails();
+      scheduleSave();
+    }
   } catch (e) {
     // Corrupt stats.json — start fresh, but don't crash boot
     // (original file is left on disk for forensic inspection)
@@ -160,27 +176,33 @@ function dayKeyFor(ts) {
 function hourKeyFor(ts) {
   return String(new Date(ts).getUTCHours()).padStart(2, '0'); // "00".."23"
 }
+function hourBucketKeyFor(ts) {
+  return new Date(ts).toISOString().slice(0, 13); // "YYYY-MM-DDTHH"
+}
 
 function normaliseTokens(t) {
   const input   = Math.max(0, Number(t?.input   ?? t?.input_tokens   ?? 0));
   const output  = Math.max(0, Number(t?.output  ?? t?.output_tokens  ?? 0));
   const reason  = Math.max(0, Number(t?.reasoning ?? t?.reasoning_tokens ?? 0));
   const cached  = Math.max(0, Number(t?.cached  ?? t?.cached_tokens  ?? 0));
+  const cacheWrite = Math.max(0, Number(t?.cacheWrite ?? t?.cache_write_tokens ?? 0));
   const total   = Math.max(0, Number(t?.total   ?? t?.total_tokens   ?? 0)) ||
-                  (input + output + reason + cached);
-  return { input, output, reasoning: reason, cached, total };
+                  (input + output + reason + cached + cacheWrite);
+  return { input, output, reasoning: reason, cached, cacheWrite, total };
 }
 
 function getOrMakeApi(apiPath) {
   if (!_state.apis[apiPath]) {
-    _state.apis[apiPath] = { totalRequests: 0, totalTokens: 0, totalCredits: 0, models: {} };
+    _state.apis[apiPath] = { totalRequests: 0, totalTokens: 0, totalCredits: 0, totalCostUsd: 0, models: {} };
   }
+  if (_state.apis[apiPath].totalCostUsd == null) _state.apis[apiPath].totalCostUsd = 0;
   return _state.apis[apiPath];
 }
 function getOrMakeModel(apiEntry, model) {
   if (!apiEntry.models[model]) {
-    apiEntry.models[model] = { totalRequests: 0, totalTokens: 0, totalCredits: 0, details: [] };
+    apiEntry.models[model] = { totalRequests: 0, totalTokens: 0, totalCredits: 0, totalCostUsd: 0, details: [] };
   }
+  if (apiEntry.models[model].totalCostUsd == null) apiEntry.models[model].totalCostUsd = 0;
   return apiEntry.models[model];
 }
 
@@ -188,6 +210,33 @@ function pushDetail(modelEntry, detail) {
   modelEntry.details.push(detail);
   if (modelEntry.details.length > MAX_DETAILS_PER_MODEL) {
     modelEntry.details.shift();
+  }
+}
+
+function addNestedCost(bucket, account, key, cost) {
+  if (!account || !key || cost <= 0) return;
+  if (!bucket[account]) bucket[account] = {};
+  bucket[account][key] = (bucket[account][key] || 0) + cost;
+}
+
+function recordAccountCost(account, timestamp, cost) {
+  const amount = Math.max(0, Number(cost) || 0);
+  if (!account || amount <= 0) return;
+  addNestedCost(_state.accountCostByDay, account, dayKeyFor(timestamp), amount);
+  addNestedCost(_state.accountCostByHour, account, hourBucketKeyFor(timestamp), amount);
+}
+
+function rebuildAccountCostBucketsFromDetails() {
+  _state.accountCostByDay = {};
+  _state.accountCostByHour = {};
+  for (const api of Object.values(_state.apis || {})) {
+    for (const mc of Object.values(api.models || {})) {
+      for (const d of (mc.details || [])) {
+        const ts = new Date(d.timestamp).getTime();
+        if (!Number.isFinite(ts)) continue;
+        recordAccountCost(d.authIndex || '', ts, d.costUsd || 0);
+      }
+    }
   }
 }
 
@@ -224,15 +273,21 @@ export function recordRequestFull(opts) {
     tokens = null,
     source = 'unknown',
     credit = 0,
+    costUsd = null,
+    authIndex: authIndexOverride = '',
     timestamp = Date.now(),
   } = opts || {};
 
   const t = normaliseTokens(tokens);
   const totalTokens = t.total;
   const creditSpent = Math.max(0, Number(credit) || 0);
+  const priced = costUsd == null ? calculateUsageCost(model, t) : null;
+  const computedCost = costUsd == null
+    ? (priced ? priced.usd : 0)
+    : Math.max(0, Number(costUsd) || 0);
   const failed = !success;
 
-  const authIndex = resolveAccountEmail(accountId);
+  const authIndex = authIndexOverride || resolveAccountEmail(accountId);
   const detail = {
     timestamp: new Date(timestamp).toISOString(),
     latencyMs: Math.max(0, Math.round(durationMs || 0)),
@@ -241,6 +296,10 @@ export function recordRequestFull(opts) {
     tokens: t,
     failed,
     credit: creditSpent,
+    costUsd: computedCost,
+    priceFound: costUsd != null || !!priced,
+    priceModel: priced?.model || null,
+    priceProvider: priced?.provider || null,
   };
 
   // Global counters
@@ -249,17 +308,20 @@ export function recordRequestFull(opts) {
   else _state.successCount++;
   _state.totalTokens   += totalTokens;
   _state.totalCredits  += creditSpent;
+  _state.totalCostUsd  += computedCost;
 
   // Per-api, per-model aggregation
   const apiEntry = getOrMakeApi(source);
   apiEntry.totalRequests++;
   apiEntry.totalTokens  += totalTokens;
   apiEntry.totalCredits += creditSpent;
+  apiEntry.totalCostUsd += computedCost;
 
   const modelEntry = getOrMakeModel(apiEntry, model);
   modelEntry.totalRequests++;
   modelEntry.totalTokens  += totalTokens;
   modelEntry.totalCredits += creditSpent;
+  modelEntry.totalCostUsd += computedCost;
   pushDetail(modelEntry, detail);
 
   // Time buckets (day + hour-of-day fold)
@@ -271,6 +333,9 @@ export function recordRequestFull(opts) {
   _state.tokensByHour[hk]   = (_state.tokensByHour[hk]   || 0) + totalTokens;
   _state.creditsByDay[dk]   = (_state.creditsByDay[dk]   || 0) + creditSpent;
   _state.creditsByHour[hk]  = (_state.creditsByHour[hk]  || 0) + creditSpent;
+  _state.costByDay[dk]      = (_state.costByDay[dk]      || 0) + computedCost;
+  _state.costByHour[hk]     = (_state.costByHour[hk]     || 0) + computedCost;
+  recordAccountCost(authIndex, timestamp, computedCost);
 
   scheduleSave();
 }
@@ -289,12 +354,13 @@ export function getStats() {
   for (const apiEntry of Object.values(_state.apis)) {
     for (const [modelName, mc] of Object.entries(apiEntry.models)) {
       if (!modelCounts[modelName]) {
-        modelCounts[modelName] = { requests: 0, success: 0, errors: 0, totalMs: 0, totalTokens: 0, totalCredits: 0 };
+        modelCounts[modelName] = { requests: 0, success: 0, errors: 0, totalMs: 0, totalTokens: 0, totalCredits: 0, totalCostUsd: 0 };
       }
       const m = modelCounts[modelName];
       m.requests     += mc.totalRequests;
       m.totalTokens  += mc.totalTokens;
       m.totalCredits += mc.totalCredits;
+      m.totalCostUsd += mc.totalCostUsd || 0;
       // details carry failure + latency info — aggregate them
       for (const d of mc.details) {
         if (d.failed) m.errors++; else m.success++;
@@ -340,6 +406,7 @@ export function getStats() {
     version: SCHEMA_VERSION,
     totalTokens: _state.totalTokens,
     totalCredits: _state.totalCredits,
+    totalCostUsd: _state.totalCostUsd || 0,
     apis: _state.apis,
     requestsByDay: _state.requestsByDay,
     requestsByHour: _state.requestsByHour,
@@ -347,6 +414,10 @@ export function getStats() {
     tokensByHour: _state.tokensByHour,
     creditsByDay: _state.creditsByDay,
     creditsByHour: _state.creditsByHour,
+    costByDay: _state.costByDay,
+    costByHour: _state.costByHour,
+    accountCostByDay: _state.accountCostByDay,
+    accountCostByHour: _state.accountCostByHour,
   };
 }
 
@@ -358,22 +429,29 @@ export function getUsageSnapshot() {
     failure_count:  _state.failureCount,
     total_tokens:   _state.totalTokens,
     total_credits:  _state.totalCredits,
+    total_cost_usd: _state.totalCostUsd || 0,
     requests_by_day:  { ..._state.requestsByDay  },
     requests_by_hour: { ..._state.requestsByHour },
     tokens_by_day:    { ..._state.tokensByDay    },
     tokens_by_hour:   { ..._state.tokensByHour   },
     credits_by_day:   { ..._state.creditsByDay   },
     credits_by_hour:  { ..._state.creditsByHour  },
+    cost_by_day:      { ..._state.costByDay      },
+    cost_by_hour:     { ..._state.costByHour     },
+    account_cost_by_day:  _state.accountCostByDay,
+    account_cost_by_hour: _state.accountCostByHour,
     apis: Object.fromEntries(
       Object.entries(_state.apis).map(([apiPath, a]) => [apiPath, {
         total_requests: a.totalRequests,
         total_tokens:   a.totalTokens,
         total_credits:  a.totalCredits,
+        total_cost_usd: a.totalCostUsd || 0,
         models: Object.fromEntries(
           Object.entries(a.models).map(([m, mc]) => [m, {
             total_requests: mc.totalRequests,
             total_tokens:   mc.totalTokens,
             total_credits:  mc.totalCredits,
+            total_cost_usd: mc.totalCostUsd || 0,
             details: mc.details.map(d => ({
               timestamp: d.timestamp,
               latency_ms: d.latencyMs,
@@ -384,10 +462,15 @@ export function getUsageSnapshot() {
                 output_tokens: d.tokens.output,
                 reasoning_tokens: d.tokens.reasoning,
                 cached_tokens: d.tokens.cached,
+                cache_write_tokens: d.tokens.cacheWrite || 0,
                 total_tokens: d.tokens.total,
               },
               failed: d.failed,
               credit: d.credit || 0,
+              cost_usd: d.costUsd || 0,
+              price_found: !!d.priceFound,
+              price_model: d.priceModel || null,
+              price_provider: d.priceProvider || null,
             })),
           }])
         ),
@@ -447,6 +530,7 @@ export function importUsage(payload) {
             output_tokens: d.tokens.output,
             reasoning_tokens: d.tokens.reasoning,
             cached_tokens: d.tokens.cached,
+            cache_write_tokens: d.tokens.cacheWrite || 0,
             total_tokens: d.tokens.total,
           },
         }));
@@ -470,14 +554,17 @@ export function importUsage(payload) {
           success: !detail.failed,
           durationMs: detail.latency_ms || 0,
           accountId: detail.auth_index || null,
+          authIndex: detail.auth_index || '',
           source: apiPathTrim,
           credit: detail.credit || 0,
+          costUsd: detail.cost_usd ?? detail.costUsd ?? null,
           timestamp: detail.timestamp ? new Date(detail.timestamp).getTime() : Date.now(),
           tokens: {
             input: t.input_tokens || 0,
             output: t.output_tokens || 0,
             reasoning: t.reasoning_tokens || 0,
             cached: t.cached_tokens || 0,
+            cacheWrite: t.cache_write_tokens || 0,
             total: t.total_tokens || 0,
           },
         });
@@ -536,6 +623,93 @@ export function pruneDays(olderThanMs = 90 * 24 * 3600 * 1000) {
   }
   for (const k of Object.keys(_state.tokensByDay))   { if (k < cutoffDay) delete _state.tokensByDay[k]; }
   for (const k of Object.keys(_state.creditsByDay))  { if (k < cutoffDay) delete _state.creditsByDay[k]; }
+  for (const k of Object.keys(_state.costByDay))     { if (k < cutoffDay) delete _state.costByDay[k]; }
+  for (const bucket of Object.values(_state.accountCostByDay || {})) {
+    for (const k of Object.keys(bucket)) { if (k < cutoffDay) delete bucket[k]; }
+  }
+  for (const bucket of Object.values(_state.accountCostByHour || {})) {
+    for (const k of Object.keys(bucket)) { if (k.slice(0, 10) < cutoffDay) delete bucket[k]; }
+  }
   scheduleSave();
   return { removed };
+}
+
+const DAY_MS = 24 * 3600 * 1000;
+const HOUR_MS = 3600 * 1000;
+
+function startOfUtcDay(ts) {
+  const d = new Date(ts);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function windowStartFromReset(now, resetAtSeconds, windowMs) {
+  const resetValue = Number(resetAtSeconds);
+  let resetMs = resetValue > 1e12 ? resetValue : resetValue * 1000;
+  if (!Number.isFinite(resetMs) || resetMs <= 0) return null;
+  if (resetMs <= now) {
+    resetMs += (Math.floor((now - resetMs) / windowMs) + 1) * windowMs;
+  }
+  if (resetMs - windowMs > now) {
+    resetMs -= Math.ceil((resetMs - windowMs - now) / windowMs) * windowMs;
+  }
+  return resetMs - windowMs;
+}
+
+function parseHourBucketKey(key) {
+  const ts = Date.parse(`${key}:00:00.000Z`);
+  return Number.isFinite(ts) ? ts : NaN;
+}
+
+function sumAccountCostBetween(account, startMs, endMs) {
+  const byHour = _state.accountCostByHour?.[account] || {};
+  const hourKeys = Object.keys(byHour);
+  if (hourKeys.length) {
+    const startHour = Math.floor(startMs / HOUR_MS) * HOUR_MS;
+    const endHour = Math.floor(endMs / HOUR_MS) * HOUR_MS;
+    let total = 0;
+    for (const [key, value] of Object.entries(byHour)) {
+      const hourStart = parseHourBucketKey(key);
+      if (!Number.isFinite(hourStart)) continue;
+      if (hourStart >= startHour && hourStart <= endHour) {
+        total += Math.max(0, Number(value) || 0);
+      }
+    }
+    return total;
+  }
+
+  const byDay = _state.accountCostByDay?.[account] || {};
+  const startDay = dayKeyFor(startMs);
+  const endDay = dayKeyFor(endMs);
+  let total = 0;
+  for (const [key, value] of Object.entries(byDay)) {
+    if (key >= startDay && key <= endDay) total += Math.max(0, Number(value) || 0);
+  }
+  return total;
+}
+
+export function getAccountCostUsage(now = Date.now(), windows = {}) {
+  const byAccount = {};
+  const accounts = new Set([
+    ...Object.keys(_state.accountCostByHour || {}),
+    ...Object.keys(_state.accountCostByDay || {}),
+    ...Object.keys(windows || {}),
+  ]);
+
+  for (const account of accounts) {
+    if (!account) continue;
+    const w = windows?.[account] || {};
+    const dailyStart = windowStartFromReset(now, w.dailyResetAt, DAY_MS) ?? startOfUtcDay(now);
+    const weeklyStart = windowStartFromReset(now, w.weeklyResetAt, 7 * DAY_MS) ?? (now - 7 * DAY_MS);
+    byAccount[account] = {
+      todayUsd: sumAccountCostBetween(account, dailyStart, now),
+      weekUsd: sumAccountCostBetween(account, weeklyStart, now),
+    };
+  }
+
+  for (const v of Object.values(byAccount)) {
+    v.todayUsd = Math.round(v.todayUsd * 1_000_000) / 1_000_000;
+    v.weekUsd = Math.round(v.weekUsd * 1_000_000) / 1_000_000;
+  }
+  return byAccount;
 }

@@ -69,6 +69,9 @@ export const config = {
 
   // Dashboard
   dashboardPassword: process.env.DASHBOARD_PASSWORD || '',
+
+  // Pricing
+  priceSyncOnStartup: process.env.PRICE_SYNC_ON_STARTUP !== 'false',
 };
 
 const levels = { debug: 0, info: 1, warn: 2, error: 3 };

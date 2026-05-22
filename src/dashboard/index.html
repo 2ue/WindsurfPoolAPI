@@ -1448,7 +1448,7 @@ tbody tr:hover td { background: var(--surface-2); }
       <div class="section-body tight">
         <div class="table-wrap">
           <table id="accounts-table">
-            <thead><tr><th style="width:32px"><input type="checkbox" id="acct-select-all" onchange="App.onSelectAllToggle(this.checked)"></th><th>ID</th><th>标签</th><th>层级</th><th>RPM</th><th>余额</th><th>可用模型</th><th>状态</th><th>错误</th><th>最后使用</th><th>Key</th><th>操作</th></tr></thead>
+            <thead><tr><th style="width:32px"><input type="checkbox" id="acct-select-all" onchange="App.onSelectAllToggle(this.checked)"></th><th>ID</th><th>标签</th><th>层级</th><th>RPM</th><th>消耗</th><th>可用模型</th><th>状态</th><th>错误</th><th>最后使用</th><th>Key</th><th>操作</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -1626,6 +1626,7 @@ tbody tr:hover td { background: var(--surface-2); }
         <div class="page-subtitle">请求量、Token 消耗、Credit 花销与模型使用情况</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm" onclick="App.syncPricing()">同步价格</button>
         <button class="btn btn-sm" onclick="App.exportUsage()">导出历史</button>
         <button class="btn btn-sm" onclick="document.getElementById('usage-import-file').click()">导入历史</button>
         <input id="usage-import-file" type="file" accept="application/json" style="display:none" onchange="App.importUsage(event)">
@@ -1646,6 +1647,7 @@ tbody tr:hover td { background: var(--surface-2); }
             <button class="seg-btn active" data-stats-metric="requests" onclick="App.setStatsMetric('requests')">请求</button>
             <button class="seg-btn" data-stats-metric="tokens" onclick="App.setStatsMetric('tokens')">Tokens</button>
             <button class="seg-btn" data-stats-metric="credits" onclick="App.setStatsMetric('credits')">Credits</button>
+            <button class="seg-btn" data-stats-metric="cost" onclick="App.setStatsMetric('cost')">费用</button>
           </div>
         </div>
       </div>
@@ -1654,6 +1656,25 @@ tbody tr:hover td { background: var(--surface-2); }
         <div class="chart-tooltip" id="stats-main-tooltip"></div>
       </div>
       <div class="chart-legend" id="stats-main-legend"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header">
+        <div>
+          <div class="section-title">模型价格表</div>
+          <div class="section-desc" id="pricing-source-desc">启动时自动同步，可手动刷新。无价格的模型请求不会计算美元费用。</div>
+        </div>
+      </div>
+      <div class="section-body tight">
+        <div class="table-wrap">
+          <table id="pricing-table">
+            <thead><tr>
+              <th>模型</th><th>来源模型</th><th>Provider</th><th>输入 / 1M</th><th>输出 / 1M</th><th>缓存读 / 1M</th><th>缓存写 / 1M</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <div class="chart-grid">
@@ -1708,7 +1729,7 @@ tbody tr:hover td { background: var(--surface-2); }
             <thead><tr>
               <th>模型</th><th>请求</th><th>成功</th><th>错误</th><th>成功率</th>
               <th>平均耗时</th><th>输入 Tokens</th><th>输出 Tokens</th><th>缓存命中</th>
-              <th>Credits</th>
+              <th>缓存写入</th><th>Credits</th><th>费用</th>
             </tr></thead>
             <tbody></tbody>
           </table>
@@ -1725,7 +1746,7 @@ tbody tr:hover td { background: var(--surface-2); }
           <table id="usage-details-table">
             <thead><tr>
               <th>时间</th><th>API</th><th>模型</th><th>账号</th>
-              <th>耗时</th><th>输入</th><th>输出</th><th>缓存</th><th>Credit</th><th>状态</th>
+              <th>耗时</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存写</th><th>Credit</th><th>费用</th><th>价格</th><th>状态</th>
             </tr></thead>
             <tbody></tbody>
           </table>
@@ -2028,6 +2049,7 @@ const App = {
   _filterTimer: null,
   statsMetric: 'requests',
   statsData: null,
+  pricingData: null,
   accountModelCatalog: {},
   identityPrompts: {},
 
@@ -2434,37 +2456,32 @@ const App = {
            </div>`
         : `<span class="text-xs text-dim">-</span>`;
 
-      // Credit / quota cell — collapses the legacy credit contract and the
-      // newer daily/weekly percent contract into a single progress bar.
+      // Cost / quota cell — show spent USD only. We intentionally avoid
+      // showing "available" amounts because Windsurf's remaining quota
+      // percentages are not dollar-denominated.
       const cr = a.credits || null;
+      const costUsage = a.costUsage || { todayUsd: 0, weekUsd: 0 };
+      const usageMini = `<div style="min-width:120px">
+        <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:2px">
+          <span style="color:var(--text-dim)">今日已用</span><strong>${this._fmtUsd(costUsage.todayUsd || 0)}</strong>
+        </div>
+        <div class="text-xs" style="display:flex;justify-content:space-between">
+          <span style="color:var(--text-dim)">本周已用</span><strong>${this._fmtUsd(costUsage.weekUsd || 0)}</strong>
+        </div>
+      </div>`;
       let creditCell;
       if (!cr) {
-        creditCell = `<span class="text-xs text-dim">尚未获取</span>`;
+        creditCell = usageMini;
       } else if (cr.lastError && cr.percent == null && !cr.prompt?.limit) {
-        creditCell = `<span class="text-xs" style="color:var(--error)" title="${this.esc(cr.lastError)}">获取失败</span>`;
+        creditCell = `<div title="${this.esc(cr.lastError)}">${usageMini}<div class="text-xs" style="color:var(--error);margin-top:2px">额度获取失败</div></div>`;
       } else {
         const planName = cr.planName || '-';
         const fetchedAgo = cr.fetchedAt ? Math.round((Date.now() - cr.fetchedAt) / 60000) + 'm ago' : '-';
 
-        const barHtml = (label, pct, resetAt) => {
-          if (pct == null) return '';
-          const v = Math.max(0, Math.min(100, pct));
-          const color = v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn, #f59e0b)' : 'var(--success, #10b981)';
-          const resetStr = resetAt ? new Date(resetAt * 1000).toLocaleString() : '';
-          return `<div style="margin-bottom:3px" title="${label} 剩余 ${v.toFixed(1)}%${resetStr ? '，重置: ' + resetStr : ''}">
-            <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:1px">
-              <span style="color:var(--text-dim)">${label}</span><span style="color:${color};font-weight:600">${v.toFixed(0)}%</span>
-            </div>
-            <div style="height:5px;background:var(--surface-3);border-radius:2px;overflow:hidden">
-              <div style="height:100%;width:${v}%;background:${color};transition:width .3s"></div>
-            </div>
-          </div>`;
-        };
-
         const tipLines = [
           `Plan: ${planName}`,
-          cr.prompt?.limit ? `Prompt: ${(cr.prompt.used || 0).toFixed(0)}/${cr.prompt.limit.toFixed(0)}` : '',
-          cr.flex?.limit ? `Flex:   ${(cr.flex.used || 0).toFixed(0)}/${cr.flex.limit.toFixed(0)}` : '',
+          `Today spent: ${this._fmtUsd(costUsage.todayUsd || 0)}`,
+          `7d spent: ${this._fmtUsd(costUsage.weekUsd || 0)}`,
           cr.planStart ? `Plan period: ${cr.planStart.slice(0,10)} ~ ${(cr.planEnd||'').slice(0,10)}` : '',
           `Updated: ${fetchedAgo}`,
           cr.lastError ? `Last error: ${cr.lastError}` : '',
@@ -2475,9 +2492,12 @@ const App = {
               <span style="font-weight:600">${this.esc(planName.slice(0, 10))}</span>
               <span class="text-dim">${fetchedAgo}</span>
             </div>
-            ${barHtml('日额度', cr.dailyPercent, cr.dailyResetAt)}
-            ${barHtml('周额度', cr.weeklyPercent, cr.weeklyResetAt)}
-            ${cr.prompt?.limit ? barHtml('Prompt', cr.percent, null) : ''}
+            <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:2px">
+              <span style="color:var(--text-dim)">今日已用</span><strong>${this._fmtUsd(costUsage.todayUsd || 0)}</strong>
+            </div>
+            <div class="text-xs" style="display:flex;justify-content:space-between">
+              <span style="color:var(--text-dim)">本周已用</span><strong>${this._fmtUsd(costUsage.weekUsd || 0)}</strong>
+            </div>
           </div>`;
       }
       const detailId = `acct-detail-${a.id}`;
@@ -2554,15 +2574,12 @@ const App = {
       </div>
     `).join('') || '<div class="text-sm text-dim">暂无模型探测数据，可点击“探测”刷新。</div>';
 
-    const quotaBlock = (label, pct, resetAt) => {
-      if (pct == null) return '';
-      const v = Math.max(0, Math.min(100, Number(pct) || 0));
-      const color = v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn, #f59e0b)' : 'var(--success, #10b981)';
+    const costUsage = a.costUsage || { todayUsd: 0, weekUsd: 0 };
+    const quotaBlock = (label, amount, resetAt) => {
       const reset = resetAt ? new Date(resetAt * 1000).toLocaleString() : '未知';
       return `
         <div class="account-detail-quota">
-          <div class="account-detail-kv"><span>${label}</span><strong style="color:${color}">${v.toFixed(1)}%</strong></div>
-          <div class="account-detail-bar"><span style="width:${v}%;background:${color}"></span></div>
+          <div class="account-detail-kv"><span>${label}</span><strong>${this._fmtUsd(amount || 0)}</strong></div>
           <div class="account-detail-note">重置：${this.esc(reset)}</div>
         </div>
       `;
@@ -2581,8 +2598,8 @@ const App = {
           <div class="account-detail-card">
             <div class="account-detail-title">订阅与额度</div>
             <div class="account-detail-kv"><span>计划</span><strong>${this.esc(cr.planName || a.tier || '-')}</strong></div>
-            ${quotaBlock('日额度', cr.dailyPercent, cr.dailyResetAt)}
-            ${quotaBlock('周额度', cr.weeklyPercent, cr.weeklyResetAt)}
+            ${quotaBlock('今日已用', costUsage.todayUsd, cr.dailyResetAt)}
+            ${quotaBlock('本周已用', costUsage.weekUsd, cr.weeklyResetAt)}
             ${cr.lastError ? `<div class="account-detail-note" style="color:var(--error)">${this.esc(cr.lastError)}</div>` : ''}
           </div>
           <div class="account-detail-card">
@@ -3123,6 +3140,13 @@ const App = {
     return String(n);
   },
 
+  _fmtUsd(n) {
+    n = Number(n) || 0;
+    if (n >= 100) return '$' + n.toFixed(2);
+    if (n >= 1) return '$' + n.toFixed(4);
+    return '$' + n.toFixed(6);
+  },
+
   setStatsMetric(metric) {
     this.statsMetric = metric;
     document.querySelectorAll('[data-stats-metric]').forEach(btn => {
@@ -3136,11 +3160,13 @@ const App = {
       requests: d.requestsByDay || {},
       tokens: d.tokensByDay || {},
       credits: d.creditsByDay || {},
+      cost: d.costByDay || {},
     };
     const labels = {
       requests: '请求数',
       tokens: 'Token 消耗',
       credits: 'Credit 花销',
+      cost: '美元费用',
     };
     const days = [];
     const today = new Date();
@@ -3161,17 +3187,19 @@ const App = {
     const series = this._statsSeries(d, metric);
     document.getElementById('stats-main-subtitle').textContent = `最近 14 天 · ${series.label}`;
     this.drawLineChart('stats-main-chart', series.points, {
-      color: metric === 'credits' ? '#f59e0b' : metric === 'tokens' ? '#8b5cf6' : '#3b82f6',
+      color: metric === 'cost' ? '#10b981' : metric === 'credits' ? '#f59e0b' : metric === 'tokens' ? '#8b5cf6' : '#3b82f6',
       valueFormatter: metric === 'requests'
         ? v => `${Math.round(v)} 次请求`
         : metric === 'tokens'
           ? v => `${this._fmtTokens(v)} Tokens`
-          : v => `${Number(v || 0).toFixed(2)} Credits`,
+          : metric === 'credits'
+            ? v => `${Number(v || 0).toFixed(2)} Credits`
+            : v => this._fmtUsd(v),
       tooltipId: 'stats-main-tooltip',
     });
     document.getElementById('stats-main-legend').innerHTML = `
       <span class="chart-legend-item">
-        <span class="chart-legend-swatch" style="background:${metric === 'credits' ? '#f59e0b' : metric === 'tokens' ? '#8b5cf6' : '#3b82f6'}"></span>
+        <span class="chart-legend-swatch" style="background:${metric === 'cost' ? '#10b981' : metric === 'credits' ? '#f59e0b' : metric === 'tokens' ? '#8b5cf6' : '#3b82f6'}"></span>
         ${series.label}
       </span>
     `;
@@ -3341,10 +3369,16 @@ const App = {
   },
 
   async loadStats() {
-    const d = await this.api('GET', '/stats');
+    const [d, pricing, modelData] = await Promise.all([
+      this.api('GET', '/stats'),
+      this.api('GET', '/pricing').catch(() => null),
+      this.api('GET', '/models').catch(() => ({})),
+    ]);
     this.statsData = d;
+    this.pricingData = pricing;
     const totalTokens = d.totalTokens || 0;
     const totalCredits = d.totalCredits || 0;
+    const totalCostUsd = d.totalCostUsd || 0;
 
     // Top metric cards — add Tokens and Credits alongside existing counters
     document.getElementById('stats-cards').innerHTML = `
@@ -3354,21 +3388,24 @@ const App = {
       <div class="card accent"><div class="card-header"><div class="card-title">成功率</div></div><div class="card-value">${d.totalRequests > 0 ? ((d.successCount/d.totalRequests)*100).toFixed(1) : 0}%</div></div>
       <div class="card info"><div class="card-header"><div class="card-title">Token 总消耗</div></div><div class="card-value">${this._fmtTokens(totalTokens)}</div></div>
       <div class="card accent"><div class="card-header"><div class="card-title">Credits 总花销</div></div><div class="card-value">${totalCredits.toFixed(1)}</div></div>
+      <div class="card success"><div class="card-header"><div class="card-title">美元费用</div></div><div class="card-value">${this._fmtUsd(totalCostUsd)}</div></div>
     `;
     this.renderStatsCharts(d);
+    this.renderPricingTable(pricing, d, modelData);
 
-    // Per-model stats — now also shows input/output/cached tokens and credits
+    // Per-model stats — now also shows input/output/cached tokens, credits and USD cost
     // Accumulate token splits from apis[*].models[model].details so the table
     // can show input vs output vs cached breakdowns, which the flat
     // modelCounts snapshot doesn't preserve.
     const modelTokens = {};
     for (const api of Object.values(d.apis || {})) {
       for (const [mName, mc] of Object.entries(api.models || {})) {
-        if (!modelTokens[mName]) modelTokens[mName] = { input: 0, output: 0, cached: 0 };
+        if (!modelTokens[mName]) modelTokens[mName] = { input: 0, output: 0, cached: 0, cacheWrite: 0 };
         for (const det of (mc.details || [])) {
           modelTokens[mName].input  += det.tokens?.input  || 0;
           modelTokens[mName].output += det.tokens?.output || 0;
           modelTokens[mName].cached += det.tokens?.cached || 0;
+          modelTokens[mName].cacheWrite += det.tokens?.cacheWrite || 0;
         }
       }
     }
@@ -3387,9 +3424,11 @@ const App = {
         <td class="text-sm">${this._fmtTokens(t.input)}</td>
         <td class="text-sm">${this._fmtTokens(t.output)}</td>
         <td class="text-sm">${this._fmtTokens(t.cached)}</td>
+        <td class="text-sm">${this._fmtTokens(t.cacheWrite)}</td>
         <td class="text-sm">${(s.totalCredits || 0).toFixed(1)}</td>
+        <td class="text-sm">${this._fmtUsd(s.totalCostUsd || 0)}</td>
       </tr>`;
-    }).join('') || '<tr class="empty-row"><td colspan="10">暂无请求数据</td></tr>';
+    }).join('') || '<tr class="empty-row"><td colspan="12">暂无请求数据</td></tr>';
 
     // 24h request bar chart (legacy — keeps synthesising from hourlyBuckets)
     const buckets = (d.hourlyBuckets || []).slice(-24);
@@ -3458,12 +3497,102 @@ const App = {
         <td class="text-sm">${this._fmtTokens(r.tokens?.input || 0)}</td>
         <td class="text-sm">${this._fmtTokens(r.tokens?.output || 0)}</td>
         <td class="text-sm">${this._fmtTokens(r.tokens?.cached || 0)}</td>
+        <td class="text-sm">${this._fmtTokens(r.tokens?.cacheWrite || 0)}</td>
         <td class="text-sm">${(r.credit || 0).toFixed(1)}</td>
+        <td class="text-sm">${this._fmtUsd(r.costUsd || 0)}</td>
+        <td class="text-sm">${r.priceFound ? `<code>${this.esc(r.priceModel || '-')}</code>` : '<span class="text-dim">无价格</span>'}</td>
         <td class="text-sm">${statusBadge}</td>
       </tr>`;
-    }).join('') || '<tr class="empty-row"><td colspan="10">暂无明细数据（可能是缓存命中或升级前的旧数据）</td></tr>';
+    }).join('') || '<tr class="empty-row"><td colspan="13">暂无明细数据（可能是缓存命中或升级前的旧数据）</td></tr>';
 
     this.poll('stats', () => this.loadStats(), 30000);
+  },
+
+  _priceCandidates(model) {
+    const raw = String(model || '').trim();
+    const dashed = raw.replace(/(\d)\.(\d)/g, '$1-$2');
+    const strip = s => String(s || '')
+      .replace(/-thinking(?=-|$)/g, '')
+      .replace(/-(low|medium|high|xhigh|max)(?=-|$)/g, '')
+      .replace(/-fast(?=-|$)/g, '');
+    const add = (list, value) => {
+      const s = String(value || '').trim();
+      if (!s) return;
+      list.push(s, s.toLowerCase());
+    };
+    const aliases = {
+      'claude-4-sonnet': 'claude-sonnet-4-20250514',
+      'claude-4-opus': 'claude-opus-4-20250514',
+      'claude-4-1-opus': 'claude-opus-4-1',
+      'claude-4-5-haiku': 'claude-haiku-4-5',
+      'claude-4-5-sonnet': 'claude-sonnet-4-5',
+      'claude-4-5-opus': 'claude-opus-4-5',
+    };
+    const out = [];
+    for (const value of [raw, dashed, strip(raw), strip(dashed)]) {
+      add(out, value);
+      const stripped = strip(value);
+      add(out, stripped.replace(/^claude-(\d+)-(\d+)-(haiku|sonnet|opus)$/, 'claude-$3-$1-$2'));
+      add(out, stripped.replace(/^claude-(\d+)-(haiku|sonnet|opus)$/, 'claude-$2-$1'));
+      if (aliases[stripped]) add(out, aliases[stripped]);
+    }
+    return Array.from(new Set(out.filter(Boolean)));
+  },
+
+  _priceForModel(prices, model) {
+    for (const key of this._priceCandidates(model)) {
+      if (prices?.[key]) return prices[key];
+    }
+    return null;
+  },
+
+  _fmtPricePerMillion(v) {
+    if (v == null) return '-';
+    return this._fmtUsd(Number(v || 0) * 1_000_000);
+  },
+
+  renderPricingTable(pricing, stats, modelData) {
+    const prices = pricing?.prices || {};
+    const modelIds = new Set([
+      ...(modelData?.models || []).map(m => m.id),
+      ...Object.keys(stats?.modelCounts || {}),
+    ]);
+    const rows = Array.from(modelIds).sort().map(model => {
+      const p = this._priceForModel(prices, model);
+      return { model, p };
+    });
+    const desc = document.getElementById('pricing-source-desc');
+    if (desc) {
+      const fetched = pricing?.fetchedAt ? new Date(pricing.fetchedAt).toLocaleString() : '尚未同步';
+      const err = pricing?.lastError ? ` · 最近错误：${pricing.lastError}` : '';
+      desc.textContent = `${pricing?.source || 'LiteLLM 价格表'} · ${pricing?.modelCount || 0} 个价格 · 同步时间：${fetched}${err}`;
+    }
+    const tbody = document.querySelector('#pricing-table tbody');
+    if (!tbody) return;
+    tbody.innerHTML = rows.map(({ model, p }) => `
+      <tr>
+        <td><code>${this.esc(model)}</code></td>
+        <td>${p ? `<code>${this.esc(p.model)}</code>` : '<span class="text-dim">未匹配</span>'}</td>
+        <td class="text-sm">${this.esc(p?.provider || '-')}</td>
+        <td class="text-sm">${this._fmtPricePerMillion(p?.inputCostPerToken)}</td>
+        <td class="text-sm">${this._fmtPricePerMillion(p?.outputCostPerToken)}</td>
+        <td class="text-sm">${this._fmtPricePerMillion(p?.cacheReadCostPerToken)}</td>
+        <td class="text-sm">${this._fmtPricePerMillion(p?.cacheWriteCostPerToken)}</td>
+      </tr>
+    `).join('') || '<tr class="empty-row"><td colspan="7">暂无模型价格数据，点击“同步价格”拉取。</td></tr>';
+  },
+
+  async syncPricing() {
+    this.toast('正在同步模型价格...', 'info');
+    try {
+      const r = await this.api('POST', '/pricing/sync', {});
+      if (!r.success) throw new Error(r.error || '同步失败');
+      this.toast(`价格已同步：${r.pricing?.modelCount || 0} 个模型`, 'success');
+      this.loadStats();
+    } catch (e) {
+      this.toast('价格同步失败: ' + e.message, 'error');
+      this.loadStats();
+    }
   },
 
   async resetStats() {

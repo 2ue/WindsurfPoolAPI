@@ -4,6 +4,7 @@ import { initAuth, isAuthenticated } from './auth.js';
 import { startLanguageServer, waitForReady, isLanguageServerRunning, stopLanguageServer } from './langserver.js';
 import { startServer } from './server.js';
 import { config, log } from './config.js';
+import { initPricing } from './pricing.js';
 import { existsSync, mkdirSync, rmSync, readdirSync } from 'fs';
 import { resolve as pathResolve } from 'path';
 
@@ -22,6 +23,8 @@ async function main() {
 `;
   console.log(banner);
   console.log(`  OpenAI-compatible proxy for Windsurf — by dwgx1337\n`);
+
+  initPricing();
 
   // Start language server binary
   const binaryPath = config.lsBinaryPath;

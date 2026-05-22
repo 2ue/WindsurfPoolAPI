@@ -14,8 +14,9 @@ import {
 } from '../auth.js';
 import { restartLsForProxy } from '../langserver.js';
 import { getLsStatus, stopLanguageServer, startLanguageServer, isLanguageServerRunning } from '../langserver.js';
-import { getStats, resetStats, recordRequest, getUsageSnapshot, exportUsage, importUsage, pruneDetails, pruneDays } from './stats.js';
+import { getStats, resetStats, recordRequest, getUsageSnapshot, exportUsage, importUsage, pruneDetails, pruneDays, getAccountCostUsage } from './stats.js';
 import { cacheStats, cacheClear } from '../cache.js';
+import { getPricingSnapshot, syncModelPrices } from '../pricing.js';
 import {
   getExperimental, setExperimental,
   getIdentityPrompts, setIdentityPrompts, resetIdentityPrompt,
@@ -141,7 +142,22 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
 
   // ─── Accounts ─────────────────────────────────────────
   if (subpath === '/accounts' && method === 'GET') {
-    return json(res, 200, { accounts: getAccountList() });
+    const accountList = getAccountList();
+    const costWindows = {};
+    for (const a of accountList) {
+      const window = {
+        dailyResetAt: a.credits?.dailyResetAt || null,
+        weeklyResetAt: a.credits?.weeklyResetAt || null,
+      };
+      if (a.email) costWindows[a.email] = window;
+      if (a.id) costWindows[a.id] = window;
+    }
+    const usage = getAccountCostUsage(Date.now(), costWindows);
+    const accounts = accountList.map(a => ({
+      ...a,
+      costUsage: usage[a.email] || usage[a.id] || { todayUsd: 0, weekUsd: 0 },
+    }));
+    return json(res, 200, { accounts });
   }
 
   if (subpath === '/accounts' && method === 'POST') {
@@ -428,6 +444,20 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       return json(res, 200, { success: true, before: sizeBefore, after: sizeAfter, added: sizeAfter - sizeBefore });
     } catch (err) {
       return json(res, 500, { error: err.message });
+    }
+  }
+
+  // ─── Pricing ───────────────────────────────────────────
+  if (subpath === '/pricing' && method === 'GET') {
+    return json(res, 200, getPricingSnapshot());
+  }
+
+  if (subpath === '/pricing/sync' && method === 'POST') {
+    try {
+      const snapshot = await syncModelPrices();
+      return json(res, 200, { success: true, pricing: snapshot });
+    } catch (err) {
+      return json(res, 502, { success: false, error: err.message, pricing: getPricingSnapshot() });
     }
   }
 
