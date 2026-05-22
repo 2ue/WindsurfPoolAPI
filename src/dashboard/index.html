@@ -1452,7 +1452,7 @@ tbody tr:hover td { background: var(--surface-2); }
       <div class="section-body tight">
         <div class="table-wrap">
           <table id="accounts-table">
-            <thead><tr><th style="width:32px"><input type="checkbox" id="acct-select-all" onchange="App.onSelectAllToggle(this.checked)"></th><th>ID</th><th>标签</th><th>层级</th><th>RPM</th><th>消耗</th><th>可用模型</th><th>状态</th><th>错误</th><th>最后使用</th><th>Key</th><th>操作</th></tr></thead>
+            <thead><tr><th style="width:32px"><input type="checkbox" id="acct-select-all" onchange="App.onSelectAllToggle(this.checked)"></th><th>ID</th><th>标签</th><th>层级</th><th>RPM</th><th>额度</th><th>美元消耗</th><th>可用模型</th><th>状态</th><th>错误</th><th>最后使用</th><th>Key</th><th>操作</th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
@@ -2472,12 +2472,9 @@ const App = {
            </div>`
         : `<span class="text-xs text-dim">-</span>`;
 
-      // Cost / quota cell — show spent USD only. We intentionally avoid
-      // showing "available" amounts because Windsurf's remaining quota
-      // percentages are not dollar-denominated.
       const cr = a.credits || null;
       const costUsage = a.costUsage || { todayUsd: 0, weekUsd: 0 };
-      const usageMini = `<div style="min-width:120px">
+      const costCell = `<div style="min-width:120px">
         <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:2px">
           <span style="color:var(--text-dim)">今日已用</span><strong>${this._fmtUsd(costUsage.todayUsd || 0)}</strong>
         </div>
@@ -2487,17 +2484,32 @@ const App = {
       </div>`;
       let creditCell;
       if (!cr) {
-        creditCell = usageMini;
+        creditCell = `<span class="text-xs text-dim">尚未获取</span>`;
       } else if (cr.lastError && cr.percent == null && !cr.prompt?.limit) {
-        creditCell = `<div title="${this.esc(cr.lastError)}">${usageMini}<div class="text-xs" style="color:var(--error);margin-top:2px">额度获取失败</div></div>`;
+        creditCell = `<span class="text-xs" style="color:var(--error)" title="${this.esc(cr.lastError)}">获取失败</span>`;
       } else {
         const planName = cr.planName || '-';
         const fetchedAgo = cr.fetchedAt ? Math.round((Date.now() - cr.fetchedAt) / 60000) + 'm ago' : '-';
 
+        const barHtml = (label, pct, resetAt) => {
+          if (pct == null) return '';
+          const v = Math.max(0, Math.min(100, pct));
+          const color = v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn, #f59e0b)' : 'var(--success, #10b981)';
+          const resetStr = resetAt ? new Date(resetAt * 1000).toLocaleString() : '';
+          return `<div style="margin-bottom:3px" title="${label} 剩余 ${v.toFixed(1)}%${resetStr ? '，重置: ' + resetStr : ''}">
+            <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:1px">
+              <span style="color:var(--text-dim)">${label}</span><span style="color:${color};font-weight:600">${v.toFixed(0)}%</span>
+            </div>
+            <div style="height:5px;background:var(--surface-3);border-radius:2px;overflow:hidden">
+              <div style="height:100%;width:${v}%;background:${color};transition:width .3s"></div>
+            </div>
+          </div>`;
+        };
+
         const tipLines = [
           `Plan: ${planName}`,
-          `Today spent: ${this._fmtUsd(costUsage.todayUsd || 0)}`,
-          `7d spent: ${this._fmtUsd(costUsage.weekUsd || 0)}`,
+          cr.prompt?.limit ? `Prompt: ${(cr.prompt.used || 0).toFixed(0)}/${cr.prompt.limit.toFixed(0)}` : '',
+          cr.flex?.limit ? `Flex:   ${(cr.flex.used || 0).toFixed(0)}/${cr.flex.limit.toFixed(0)}` : '',
           cr.planStart ? `Plan period: ${cr.planStart.slice(0,10)} ~ ${(cr.planEnd||'').slice(0,10)}` : '',
           `Updated: ${fetchedAgo}`,
           cr.lastError ? `Last error: ${cr.lastError}` : '',
@@ -2508,12 +2520,9 @@ const App = {
               <span style="font-weight:600">${this.esc(planName.slice(0, 10))}</span>
               <span class="text-dim">${fetchedAgo}</span>
             </div>
-            <div class="text-xs" style="display:flex;justify-content:space-between;margin-bottom:2px">
-              <span style="color:var(--text-dim)">今日已用</span><strong>${this._fmtUsd(costUsage.todayUsd || 0)}</strong>
-            </div>
-            <div class="text-xs" style="display:flex;justify-content:space-between">
-              <span style="color:var(--text-dim)">本周已用</span><strong>${this._fmtUsd(costUsage.weekUsd || 0)}</strong>
-            </div>
+            ${barHtml('日额度', cr.dailyPercent, cr.dailyResetAt)}
+            ${barHtml('周额度', cr.weeklyPercent, cr.weeklyResetAt)}
+            ${cr.prompt?.limit ? barHtml('Prompt', cr.percent, null) : ''}
           </div>`;
       }
       const detailId = `acct-detail-${a.id}`;
@@ -2528,6 +2537,7 @@ const App = {
         <td><span class="tier ${tier}">${tierLabel[tier] || tier}</span></td>
         <td>${rpmCell}</td>
         <td>${creditCell}</td>
+        <td>${costCell}</td>
         <td>${capsHtml}</td>
         <td><span class="badge ${a.status}">${a.status}</span>${rateLimitBadge}</td>
         <td style="color:${a.errorCount > 0 ? 'var(--error)' : 'inherit'}">${a.errorCount}</td>
@@ -2548,9 +2558,9 @@ const App = {
         </td>
       </tr>
       <tr id="${detailId}" class="account-detail-row" style="display:none">
-        <td colspan="12">${this.renderAccountDetail(a, ov)}</td>
+        <td colspan="13">${this.renderAccountDetail(a, ov)}</td>
       </tr>`;
-    }).join('') || '<tr class="empty-row"><td colspan="12">暂无账号，请先添加</td></tr>';
+    }).join('') || '<tr class="empty-row"><td colspan="13">暂无账号，请先添加</td></tr>';
   },
 
   toggleAccountDetail(rowId, btn) {
@@ -2590,14 +2600,25 @@ const App = {
       </div>
     `).join('') || '<div class="text-sm text-dim">暂无模型探测数据，可点击“探测”刷新。</div>';
 
-    const costUsage = a.costUsage || { todayUsd: 0, weekUsd: 0 };
-    const quotaBlock = (label, amount, resetAt) => {
+    const quotaBlock = (label, pct, resetAt) => {
+      if (pct == null) return '';
+      const v = Math.max(0, Math.min(100, Number(pct) || 0));
+      const color = v <= 10 ? 'var(--error)' : v <= 30 ? 'var(--warn, #f59e0b)' : 'var(--success, #10b981)';
       const reset = resetAt ? new Date(resetAt * 1000).toLocaleString() : '未知';
       return `
         <div class="account-detail-quota">
-          <div class="account-detail-kv"><span>${label}</span><strong>${this._fmtUsd(amount || 0)}</strong></div>
+          <div class="account-detail-kv"><span>${label}</span><strong style="color:${color}">${v.toFixed(1)}%</strong></div>
+          <div class="account-detail-bar"><span style="width:${v}%;background:${color}"></span></div>
           <div class="account-detail-note">重置：${this.esc(reset)}</div>
         </div>
+      `;
+    };
+    const costUsage = a.costUsage || { todayUsd: 0, weekUsd: 0 };
+    const costBlock = (label, amount, resetAt) => {
+      const reset = resetAt ? new Date(resetAt * 1000).toLocaleString() : '未知';
+      return `
+        <div class="account-detail-kv"><span>${label}</span><strong>${this._fmtUsd(amount || 0)}</strong></div>
+        <div class="account-detail-note">窗口重置：${this.esc(reset)}</div>
       `;
     };
     const lsMatches = (ov?.langServer?.instances || []).filter(i => i.accountId === a.id || i.key === a.callerKey);
@@ -2614,9 +2635,14 @@ const App = {
           <div class="account-detail-card">
             <div class="account-detail-title">订阅与额度</div>
             <div class="account-detail-kv"><span>计划</span><strong>${this.esc(cr.planName || a.tier || '-')}</strong></div>
-            ${quotaBlock('今日已用', costUsage.todayUsd, cr.dailyResetAt)}
-            ${quotaBlock('本周已用', costUsage.weekUsd, cr.weeklyResetAt)}
+            ${quotaBlock('日额度', cr.dailyPercent, cr.dailyResetAt)}
+            ${quotaBlock('周额度', cr.weeklyPercent, cr.weeklyResetAt)}
             ${cr.lastError ? `<div class="account-detail-note" style="color:var(--error)">${this.esc(cr.lastError)}</div>` : ''}
+          </div>
+          <div class="account-detail-card">
+            <div class="account-detail-title">美元消耗</div>
+            ${costBlock('今日已用', costUsage.todayUsd, cr.dailyResetAt)}
+            ${costBlock('本周已用', costUsage.weekUsd, cr.weeklyResetAt)}
           </div>
           <div class="account-detail-card">
             <div class="account-detail-title">运行关联</div>
