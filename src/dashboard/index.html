@@ -142,9 +142,11 @@ code {
 .main {
   margin-left: 232px;
   flex: 1;
+  width: calc(100% - 232px);
   padding: 28px 36px 40px;
   min-height: 100vh;
-  max-width: 1400px;
+  max-width: none;
+  min-width: 0;
 }
 .page-header {
   display: flex;
@@ -761,6 +763,52 @@ tbody tr:hover td { background: var(--surface-2); }
   overflow: hidden;
   animation: modalIn .2s cubic-bezier(.16,1,.3,1);
 }
+.modal.account-detail-modal {
+  width: min(1120px, calc(100vw - 48px));
+  max-width: 1120px;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+.modal.account-detail-modal .modal-header {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+}
+.modal.account-detail-modal .modal-body {
+  padding: 0;
+  overflow: auto;
+}
+.modal.account-detail-modal .account-detail-wrap {
+  padding: 20px 24px 24px;
+}
+.modal.account-detail-modal .account-detail-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.modal.account-detail-modal .account-detail-models {
+  max-height: min(430px, 45vh);
+  overflow: auto;
+}
+.modal-close {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.modal-close:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+}
 @keyframes modalIn {
   from { opacity: 0; transform: translateY(-10px) scale(.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -860,11 +908,6 @@ tbody tr:hover td { background: var(--surface-2); }
 .expand-chevron.open, .detail-toggle.open {
   color: var(--accent);
   transform: rotate(90deg);
-}
-.account-detail-row > td {
-  padding: 0 !important;
-  background: #0d0d10 !important;
-  border-bottom: 1px solid var(--border) !important;
 }
 .account-detail-wrap {
   padding: 18px 24px;
@@ -1182,7 +1225,7 @@ tbody tr:hover td { background: var(--surface-2); }
   .sidebar .brand-name, .sidebar .brand-sub, .sidebar nav a span, .sidebar .footer .ver, .sidebar .nav-group-label { display: none; }
   .sidebar .brand { justify-content: center; padding: 20px 0; }
   .sidebar nav a { justify-content: center; padding: 10px; }
-  .main { margin-left: 60px; padding: 20px 16px; }
+  .main { margin-left: 60px; width: calc(100% - 60px); padding: 20px 16px; }
   .detail-grid, .chart-grid, .chart-pie-body { grid-template-columns: 1fr; }
   .chart-pie-body canvas { margin: 0 auto; }
 }
@@ -2407,6 +2450,8 @@ const App = {
       this.api('GET', '/overview').catch(() => null),
       this.api('GET', '/models').catch(() => ({})),
     ]);
+    this.accountsData = d;
+    this.accountsOverview = ov;
     this.accountModelCatalog = Object.fromEntries((modelData.models || []).map(m => [m.id, m]));
     if (ov?.langServer) {
       const instances = ov.langServer.instances || [];
@@ -2525,14 +2570,10 @@ const App = {
             ${cr.prompt?.limit ? barHtml('Prompt', cr.percent, null) : ''}
           </div>`;
       }
-      const detailId = `acct-detail-${a.id}`;
       return `
       <tr>
         <td><input type="checkbox" class="acct-cb" data-id="${a.id}" onchange="App.updateBatchBar()"></td>
-        <td>
-          <button class="detail-toggle" onclick="App.toggleAccountDetail('${detailId}', this)" title="展开详情">›</button>
-          <code>${a.id}</code>
-        </td>
+        <td><code>${a.id}</code></td>
         <td>${this.esc(a.email)}</td>
         <td><span class="tier ${tier}">${tierLabel[tier] || tier}</span></td>
         <td>${rpmCell}</td>
@@ -2547,6 +2588,7 @@ const App = {
         </td>
         <td class="nowrap">
           <div class="btn-group">
+            <button class="btn btn-primary btn-xs" onclick="App.openAccountDetail('${a.id}')" title="查看账号详情">详情</button>
             <button class="btn btn-ghost btn-xs" onclick="App.probeAccount('${a.id}')" title="探测能力">探测</button>
             <button class="btn btn-ghost btn-xs" onclick="App.refreshCredits('${a.id}')" title="刷新余额">余额</button>
             ${a.status === 'active'
@@ -2556,19 +2598,31 @@ const App = {
             <button class="btn btn-ghost btn-xs" style="color:var(--error)" onclick="App.deleteAccount('${a.id}')">删除</button>
           </div>
         </td>
-      </tr>
-      <tr id="${detailId}" class="account-detail-row" style="display:none">
-        <td colspan="13">${this.renderAccountDetail(a, ov)}</td>
       </tr>`;
     }).join('') || '<tr class="empty-row"><td colspan="13">暂无账号，请先添加</td></tr>';
   },
 
-  toggleAccountDetail(rowId, btn) {
-    const row = document.getElementById(rowId);
-    if (!row) return;
-    const open = row.style.display === 'none';
-    row.style.display = open ? 'table-row' : 'none';
-    if (btn) btn.classList.toggle('open', open);
+  openAccountDetail(id) {
+    const account = (this.accountsData?.accounts || []).find(a => a.id === id);
+    if (!account) return this.toast('账号不存在或列表尚未加载', 'error');
+    const ov = this.accountsOverview || null;
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-overlay';
+    wrap.innerHTML = `
+      <div class="modal account-detail-modal">
+        <div class="modal-header">
+          <div>
+            <div class="modal-title">账号详情</div>
+            <div class="modal-desc">${this.esc(account.email || account.id || '-')}</div>
+          </div>
+          <button class="modal-close" data-act="close" title="关闭">×</button>
+        </div>
+        <div class="modal-body">${this.renderAccountDetail(account, ov)}</div>
+      </div>`;
+    document.getElementById('modal-container').appendChild(wrap);
+    const close = () => wrap.remove();
+    wrap.querySelector('[data-act=close]').onclick = close;
+    wrap.onclick = (e) => { if (e.target === wrap) close(); };
   },
 
   renderAccountDetail(a, ov) {
