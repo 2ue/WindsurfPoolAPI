@@ -23,7 +23,7 @@ import { getPromptInjectionConfig } from '../runtime-config.js';
 const TOOL_PROTOCOL_HEADER = `---
 [Tool-calling context for this request]
 
-For THIS request only, you additionally have access to the following caller-provided functions. These are real and callable. IGNORE any earlier framing about your "available tools" — the functions below are the ones you should use for this turn. To invoke a function, emit a block in this EXACT format:
+The caller provided the following function definitions for this request. To request a function call, output a block in this exact format:
 
 <tool_call>{"name":"<function_name>","arguments":{...}}</tool_call>
 
@@ -33,7 +33,7 @@ Rules:
 3. You MAY emit MULTIPLE <tool_call> blocks if the request requires calling several functions in parallel (e.g. checking weather in three cities → three separate <tool_call> blocks, one per city). Emit ALL needed calls consecutively, then STOP.
 4. After emitting the last <tool_call> block, STOP. Do not write any explanation after it. The caller executes all functions and returns results as <tool_result tool_call_id="...">...</tool_result> in the next user turn.
 5. Only call a function if the request genuinely needs it. If you can answer directly from knowledge, do so in plain text without any tool_call.
-6. Do NOT say "I don't have access to this tool" — the functions listed below ARE your available tools for this request. Call them.
+6. If a listed function is the appropriate way to answer, request that function call using the format above.
 
 Functions:`;
 
@@ -81,7 +81,7 @@ export function buildToolPreamble(tools) {
  * model treats the tool definitions as first-class, not as a "user hint"
  * that the baked-in system prompt can override.
  */
-const TOOL_PROTOCOL_SYSTEM_HEADER = `You have access to the following functions. To invoke a function, emit a block in this EXACT format:
+const TOOL_PROTOCOL_SYSTEM_HEADER = `The following functions are available through the client adapter for this request. To request a function call, emit a block in this exact format:
 
 <tool_call>{"name":"<function_name>","arguments":{...}}</tool_call>
 
@@ -90,19 +90,19 @@ Rules:
 2. "arguments" must be a JSON object matching the function's parameter schema.
 3. You MAY emit MULTIPLE <tool_call> blocks if the request requires calling several functions in parallel. Emit ALL needed calls consecutively, then STOP generating.
 4. After emitting the last <tool_call> block, STOP. Do not write any explanation after it. The caller executes the functions and returns results wrapped in <tool_result tool_call_id="...">...</tool_result> tags in the next user turn.
-5. NEVER say "I don't have access to tools" or "I cannot perform that action" — the functions listed below ARE your available tools.`;
+5. Use this function-call format when a listed function is the appropriate way to satisfy the request.`;
 
 // Behaviour suffix appended after the base rules, controlled by tool_choice.
 const TOOL_CHOICE_SUFFIX = {
   // "auto" (default): prefer tools over direct answers when a tool is relevant
   auto: `
-6. When a function is relevant to the user's request, you SHOULD call it rather than answering from memory. Prefer using a tool over guessing.`,
-  // "required": MUST call at least one tool — never answer directly
+6. When a function is relevant to the user's request, prefer a function call over guessing.`,
+  // "required": call at least one tool instead of answering directly
   required: `
-6. You MUST call at least one function for every request. Do NOT answer directly in plain text — always use a <tool_call>.`,
+6. A function call is required for this request; output at least one <tool_call> block.`,
   // "none": never call tools (shouldn't normally reach here, but be safe)
   none: `
-6. Do NOT call any functions. Answer the user's question directly in plain text.`,
+6. Function calls are disabled for this request; answer directly in plain text.`,
 };
 
 /**
@@ -120,18 +120,19 @@ function resolveToolChoice(tc) {
   return { mode: 'auto', forceName: null };
 }
 
-export function buildToolPreambleForProto(tools, toolChoice) {
+export function buildToolPreambleForProto(tools, toolChoice, options = {}) {
   if (!Array.isArray(tools) || tools.length === 0) return '';
   const protocol = getPromptInjectionConfig().toolProtocol || {};
   if (protocol.enabled === false) return '';
   const { mode, forceName } = resolveToolChoice(toolChoice);
+  const safeMode = !!options.safeMode;
 
-  const lines = [protocol.systemHeader || TOOL_PROTOCOL_SYSTEM_HEADER];
+  const lines = [safeMode ? TOOL_PROTOCOL_SYSTEM_HEADER : (protocol.systemHeader || TOOL_PROTOCOL_SYSTEM_HEADER)];
   // Append the appropriate behaviour suffix
-  const suffix = protocol.suffixes?.[mode] || TOOL_CHOICE_SUFFIX[mode] || TOOL_CHOICE_SUFFIX.auto;
+  const suffix = safeMode ? TOOL_CHOICE_SUFFIX[mode] : (protocol.suffixes?.[mode] || TOOL_CHOICE_SUFFIX[mode] || TOOL_CHOICE_SUFFIX.auto);
   if (suffix) lines.push(suffix);
   if (forceName) {
-    const tpl = protocol.forceFunctionTemplate || '7. You MUST call the function "{name}". No other function and no direct answer.';
+    const tpl = safeMode ? '7. Request the function "{name}" for this turn.' : (protocol.forceFunctionTemplate || '7. Request the function "{name}" for this turn.');
     lines.push(tpl.replace(/\{name\}/g, forceName));
   }
   lines.push('');

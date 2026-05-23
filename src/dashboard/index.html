@@ -2019,6 +2019,26 @@ tbody tr:hover td { background: var(--surface-2); }
             <div class="text-sm text-muted">Claude Code 使用 /v1/messages 调工具时，丢弃 tool_use 前的普通文本，避免先回答一次、工具后又回答一次。</div>
           </div>
         </div>
+        <div style="display:flex;align-items:center;gap:16px;margin-top:16px">
+          <label class="switch">
+            <input type="checkbox" id="pi-cc-safe-mode">
+            <span class="switch-slider"></span>
+          </label>
+          <div>
+            <div style="font-weight:500">Claude Code 安全兼容模式</div>
+            <div class="text-sm text-muted">/v1/messages 默认启用。使用温和工具协议，并跳过容易被 Claude 4.7 误判的 Cascade 身份/通信 section 注入。</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;margin-top:16px">
+          <label class="switch">
+            <input type="checkbox" id="pi-disable-anthropic-identity">
+            <span class="switch-slider"></span>
+          </label>
+          <div>
+            <div style="font-weight:500">/v1/messages 禁用模型身份注入</div>
+            <div class="text-sm text-muted">保留全局身份注入开关，但 Claude Code 请求不再额外追加 “You are model” 类系统提示。</div>
+          </div>
+        </div>
         <div class="section-desc" style="margin:20px 0 12px">多轮对话包装</div>
         <div style="display:flex;align-items:center;gap:16px;margin-bottom:12px">
           <label class="switch">
@@ -3828,12 +3848,16 @@ const App = {
       const ja = document.getElementById('pi-lang-ja');
       const ko = document.getElementById('pi-lang-ko');
       const suppress = document.getElementById('pi-suppress-tool-text');
+      const ccSafe = document.getElementById('pi-cc-safe-mode');
+      const disableIdentity = document.getElementById('pi-disable-anthropic-identity');
       if (enabled) enabled.checked = lang.enabled !== false;
       if (applyTo) applyTo.value = lang.applyTo || 'direct_user_only';
       if (zh) zh.value = templates.zh || '';
 	      if (ja) ja.value = templates.ja || '';
 	      if (ko) ko.value = templates.ko || '';
 	      if (suppress) suppress.checked = pi.anthropicMessages?.suppressTextWithToolUse !== false;
+	      if (ccSafe) ccSafe.checked = pi.anthropicMessages?.claudeCodeSafeMode !== false;
+	      if (disableIdentity) disableIdentity.checked = pi.anthropicMessages?.disableIdentityPrompt !== false;
 	      setChecked('pi-conversation-wrapper-enabled', pi.conversationWrapper?.enabled);
 	      setValue('pi-conversation-wrapper-content', pi.conversationWrapper?.content);
 	      setChecked('pi-tool-protocol-enabled', tool.enabled);
@@ -3936,6 +3960,8 @@ const App = {
       },
       anthropicMessages: {
         suppressTextWithToolUse: checked('pi-suppress-tool-text'),
+        claudeCodeSafeMode: checked('pi-cc-safe-mode'),
+        disableIdentityPrompt: checked('pi-disable-anthropic-identity'),
       },
       conversationWrapper: {
         enabled: checked('pi-conversation-wrapper-enabled'),

@@ -248,7 +248,7 @@ export class WindsurfClient {
    * @param {object} opts - { onChunk, onEnd, onError }
    */
   async cascadeChat(messages, modelEnum, modelUid, opts = {}) {
-    const { onChunk, onEnd, onError, signal, reuseEntry, toolPreamble } = opts;
+    const { onChunk, onEnd, onError, signal, reuseEntry, toolPreamble, anthropicMessagesMode = false } = opts;
     const aborted = () => signal?.aborted;
     const inputChars = messages.reduce((n, m) => n + contentToString(m?.content).length, 0);
 
@@ -349,7 +349,7 @@ export class WindsurfClient {
 
       // Step 2: Send message (retry once on panel-state-not-found)
       const sendMessage = async () => {
-        const sendProto = buildSendCascadeMessageRequest(this.apiKey, cascadeId, text, modelEnum, modelUid, sessionId, { toolPreamble, images });
+        const sendProto = buildSendCascadeMessageRequest(this.apiKey, cascadeId, text, modelEnum, modelUid, sessionId, { toolPreamble, images, anthropicMessagesMode });
         await grpcUnary(
           this.port, this.csrfToken, `${LS_SERVICE}/SendUserCascadeMessage`, grpcFrame(sendProto)
         );

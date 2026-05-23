@@ -204,6 +204,7 @@ export async function handleChatCompletions(body, deps = {}) {
   const callerKey = deps.callerKey || deps.context?.callerKey || '';
   const modelEnum = modelInfo?.enumValue || 0;
   const modelUid = modelInfo?.modelUid || null;
+  const isAnthropicMessagesRequest = !!body._anthropicMessages?.enabled || source === 'POST /v1/messages';
   // Models with a modelUid use the Cascade flow (StartCascade → SendUserCascadeMessage).
   // Legacy RawGetChatMessage only for models with enumValue>0 and NO modelUid.
   // Newer models (gemini-3.0, gpt-5.2, etc.) have both enumValue AND modelUid but
@@ -228,7 +229,9 @@ export async function handleChatCompletions(body, deps = {}) {
   // pass empty tools to normalizeMessagesForCascade so it only rewrites
   // role:tool / assistant.tool_calls messages without injecting a user-level
   // preamble (that's now handled at the proto layer).
-  const toolPreamble = emulateTools ? buildToolPreambleForProto(tools || [], tool_choice) : '';
+  const toolPreamble = emulateTools ? buildToolPreambleForProto(tools || [], tool_choice, {
+    safeMode: isAnthropicMessagesRequest && promptCfg.anthropicMessages?.claudeCodeSafeMode !== false,
+  }) : '';
   let cascadeMessages = emulateTools
     ? normalizeMessagesForCascade(messages, [])
     : [...messages];
@@ -237,7 +240,9 @@ export async function handleChatCompletions(body, deps = {}) {
   // When enabled, prepend a system message so the model identifies itself as
   // the requested model (e.g. "I am Claude Opus 4.6") instead of leaking the
   // Cascade/Windsurf backend identity.
-  if (isExperimentalEnabled('modelIdentityPrompt') && modelInfo?.provider) {
+  const skipIdentityForAnthropic =
+    isAnthropicMessagesRequest && promptCfg.anthropicMessages?.disableIdentityPrompt !== false;
+  if (!skipIdentityForAnthropic && isExperimentalEnabled('modelIdentityPrompt') && modelInfo?.provider) {
     const identityText = buildIdentitySystemMessage(displayModel, modelInfo.provider);
     if (identityText) {
       cascadeMessages = [{ role: 'system', content: identityText }, ...cascadeMessages];
@@ -280,7 +285,7 @@ export async function handleChatCompletions(body, deps = {}) {
   const ckey = cacheKey(body);
 
   if (stream) {
-    return streamResponse(chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, toolPreamble, source, creditMultiplier, callerKey);
+    return streamResponse(chatId, created, displayModel, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, toolPreamble, source, creditMultiplier, callerKey, isAnthropicMessagesRequest);
   }
 
   // ── Local response cache (exact body match) ─────────────
@@ -373,6 +378,7 @@ export async function handleChatCompletions(body, deps = {}) {
       reuseEnabled ? { reuseEntry, lsPort: ls.port, apiKey: acct.apiKey, callerKey } : null,
       emulateTools, toolPreamble,
       source, creditMultiplier,
+      isAnthropicMessagesRequest,
     );
     if (result.status === 200) return result;
     reuseEntry = null; // don't try to reuse on the retry
@@ -400,7 +406,7 @@ export async function handleChatCompletions(body, deps = {}) {
   return lastErr || { status: 503, body: { error: { message: 'No active accounts available', type: 'pool_exhausted' } } };
 }
 
-async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, emulateTools, toolPreamble, source = 'POST /v1/chat/completions', creditMultiplier = 0) {
+async function nonStreamResponse(client, id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, apiKey, ckey, poolCtx, emulateTools, toolPreamble, source = 'POST /v1/chat/completions', creditMultiplier = 0, anthropicMessagesMode = false) {
   const startTime = Date.now();
   try {
     let allText = '';
@@ -413,7 +419,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     let serverUsage = null;
 
     if (useCascade) {
-      const chunks = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, { reuseEntry: poolCtx?.reuseEntry || null, toolPreamble });
+      const chunks = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, { reuseEntry: poolCtx?.reuseEntry || null, toolPreamble, anthropicMessagesMode });
       for (const c of chunks) {
         if (c.text) allText += c.text;
         if (c.thinking) allThinking += c.thinking;
@@ -558,7 +564,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
   }
 }
 
-function streamResponse(id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, toolPreamble, source = 'POST /v1/chat/completions', creditMultiplier = 0, callerKey = '') {
+function streamResponse(id, created, model, modelKey, messages, cascadeMessages, modelEnum, modelUid, useCascade, ckey, emulateTools, toolPreamble, source = 'POST /v1/chat/completions', creditMultiplier = 0, callerKey = '', anthropicMessagesMode = false) {
   return {
     status: 200,
     stream: true,
@@ -769,7 +775,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
           try {
             if (useCascade) {
               cascadeResult = await client.cascadeChat(cascadeMessages, modelEnum, modelUid, {
-                onChunk, signal: abortController.signal, reuseEntry, toolPreamble,
+                onChunk, signal: abortController.signal, reuseEntry, toolPreamble, anthropicMessagesMode,
               });
             } else {
               await client.rawGetChatMessage(messages, modelEnum, modelUid, { onChunk });

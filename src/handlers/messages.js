@@ -691,6 +691,10 @@ export async function handleMessages(anthropicBody, deps = {}) {
   // Tag source for the stats recorder so /v1/messages traffic shows up as its
   // own API bucket instead of being merged with /v1/chat/completions.
   openaiBody._source = 'POST /v1/messages';
+  openaiBody._anthropicMessages = {
+    enabled: true,
+    client: 'claude-code-compatible',
+  };
 
   // Non-stream path: delegate and re-shape the body.
   if (!openaiBody.stream) {
