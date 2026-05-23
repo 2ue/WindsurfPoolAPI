@@ -22,7 +22,7 @@ import {
   normalizeMessagesForCascade, ToolCallStreamParser, parseToolCallsFromText,
   buildToolPreambleForProto,
 } from './tool-emulation.js';
-import { sanitizeText, PathSanitizeStream } from '../sanitize.js';
+import { sanitizeText, sanitizeClientToolArguments, PathSanitizeStream } from '../sanitize.js';
 
 const HEARTBEAT_MS = 5_000;
 const QUEUE_RETRY_MS = 1_000;
@@ -456,7 +456,7 @@ async function nonStreamResponse(client, id, created, model, modelKey, messages,
     if (toolCalls.length) {
       toolCalls = toolCalls.map(tc => ({
         ...tc,
-        argumentsJson: sanitizeText(tc.argumentsJson || ''),
+        argumentsJson: sanitizeClientToolArguments(tc.argumentsJson || ''),
       }));
     }
 
@@ -683,7 +683,7 @@ function streamResponse(id, created, model, modelKey, messages, cascadeMessages,
               index: idx,
               id: tc.id,
               type: 'function',
-              function: { name: tc.name, arguments: sanitizeText(tc.argumentsJson || '{}') },
+              function: { name: tc.name, arguments: sanitizeClientToolArguments(tc.argumentsJson || '{}') },
             }],
           }, finish_reason: null }] });
       };

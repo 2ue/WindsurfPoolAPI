@@ -46,6 +46,11 @@ if (_repoRoot.length > 10 && _repoRoot !== '/root/WindsurfPoolAPI') {
 // /root/WindsurfPoolAPI is always redacted regardless of auto-detection
 PATTERNS.push([/\/root\/WindsurfPoolAPI(?:\/[^\s"'`<>)}\],*;]*)?/g, '[internal]']);
 
+const CLIENT_TOOL_ARGUMENT_PATTERNS = [
+  [/\/tmp\/windsurf-workspace(\/[^\s"'`<>)}\],*;]*)?/g, '.$1'],
+  [/\/home\/user\/projects\/workspace-[a-z0-9]+(\/[^\s"'`<>)}\],*;]*)?/g, '.$1'],
+];
+
 // Bare literals (no path tail) used by the streaming cut-point finder.
 const SENSITIVE_LITERALS = [
   '/tmp/windsurf-workspace',
@@ -69,6 +74,19 @@ export function sanitizeText(s) {
   if (typeof s !== 'string' || !s) return s;
   let out = s;
   for (const [re, rep] of PATTERNS) out = out.replace(re, rep);
+  return out;
+}
+
+/**
+ * Rewrite only Cascade's virtual workspace paths inside client-side tool-call
+ * arguments. These arguments are consumed by the API client (Claude Code), so
+ * real caller paths like /Users/... must remain intact. Virtual Windsurf paths
+ * are not valid on the caller machine and should point at the client's cwd.
+ */
+export function sanitizeClientToolArguments(s) {
+  if (typeof s !== 'string' || !s) return s;
+  let out = s;
+  for (const [re, rep] of CLIENT_TOOL_ARGUMENT_PATTERNS) out = out.replace(re, rep);
   return out;
 }
 
